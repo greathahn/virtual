@@ -25,6 +25,7 @@
   input[type=checkbox]{accent-color:var(--accent)}
   #start{position:fixed;inset:0;display:grid;place-items:center;background:rgba(6,8,12,.9);
     padding:0 max(16px,env(safe-area-inset-left,0px)) 0 max(16px,env(safe-area-inset-right,0px))}
+  #start[hidden]{display:none}
   #start > div{max-width:320px;text-align:center}
   #start h1{font-size:22px;margin:0 0 8px;letter-spacing:-.01em}
   #start p{color:var(--dim);margin:0 0 20px}
@@ -46,6 +47,7 @@
   <h1>Window Parallax</h1>
   <p>The front camera tracks your eyes and the screen becomes a window into a 3D room. Hold the phone at arm's length and move your head.</p>
   <button id="go">Start camera</button>
+  <div id="msg" style="color:var(--dim);font:12px var(--mono);margin-top:14px"></div>
   <div id="err"></div>
 </div></div>
 
@@ -189,22 +191,27 @@ function eyeFromLandmarks(lm, vw, vh, t){
 // ---------- tracking ----------
 let landmarker = null, lastVT = -1, frames = 0, fpsT = performance.now(), fps = 0;
 async function startCamera(){
-  const err = $('err'); err.textContent = '';
+  const err = $('err'), msg = $('msg'); err.textContent = '';
+  const say = t => { msg.textContent = t; st.textContent = t; };
   if (!isSecureContext || !navigator.mediaDevices?.getUserMedia){
     err.textContent = 'Camera needs HTTPS (or localhost). Open this file from an https:// host.'; return;
   }
   try{
-    $('go').disabled = true; st.textContent = 'loading model…';
+    $('go').disabled = true; say('opening camera…');
     const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:640}, height:{ideal:480}}, audio:false});
     video.srcObject = stream; await video.play(); video.style.display = 'block';
-    const mp = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14');
+    say('loading tracker (~5 MB)…');
+    const mod = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
+    const mp = mod.FaceLandmarker ? mod : mod.default;
     const vision = await mp.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
-    landmarker = await mp.FaceLandmarker.createFromOptions(vision, {
-      baseOptions:{ modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task', delegate:'GPU' },
+    const make = delegate => mp.FaceLandmarker.createFromOptions(vision, {
+      baseOptions:{ modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task', delegate },
       runningMode:'VIDEO', numFaces:1, outputFaceBlendshapes:false, outputFacialTransformationMatrixes:false });
+    try { landmarker = await make('GPU'); }
+    catch(e){ say('GPU delegate failed, using CPU…'); landmarker = await make('CPU'); }
     $('start').hidden = true; st.textContent = 'tracking';
   }catch(e){
-    $('go').disabled = false; st.textContent = 'idle';
+    $('go').disabled = false; say('idle');
     err.textContent = (e && e.message) ? e.message : String(e);
   }
 }
