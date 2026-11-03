@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>Window Parallax</title>
+<style>
+  :root{
+    --bg:#06080c; --fg:#dfe6ee; --dim:#8a97a6; --accent:#4dd0e1; --panel:rgba(6,8,12,.6);
+    --mono:ui-monospace,"SF Mono",Menlo,monospace;
+  }
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);overflow:hidden;
+    font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-user-select:none;user-select:none;touch-action:none}
+  #c{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #v{position:fixed;left:max(10px,env(safe-area-inset-left,0px));bottom:max(10px,env(safe-area-inset-bottom,0px));
+    width:84px;height:112px;object-fit:cover;border:1px solid #223;border-radius:8px;opacity:.75;transform:scaleX(-1);display:none}
+  #hud{position:fixed;top:0;left:0;right:0;padding:calc(10px + env(safe-area-inset-top,0px)) max(14px,env(safe-area-inset-right,0px)) 0 max(14px,env(safe-area-inset-left,0px));
+    display:flex;justify-content:space-between;gap:10px;pointer-events:none;font:11px var(--mono);color:var(--dim);
+    font-variant-numeric:tabular-nums;letter-spacing:.02em}
+  .ctl{position:fixed;bottom:0;right:0;padding:0 max(12px,env(safe-area-inset-right,0px)) calc(10px + env(safe-area-inset-bottom,0px)) 0;
+    display:flex;flex-direction:column;gap:6px;align-items:flex-end;font-size:12px}
+  .ctl label{display:flex;gap:8px;align-items:center;background:var(--panel);padding:6px 10px;border-radius:8px;backdrop-filter:blur(6px)}
+  .ctl b{font:11px var(--mono);min-width:3.5ch;text-align:right}
+  input[type=range]{width:100px;accent-color:var(--accent)}
+  input[type=checkbox]{accent-color:var(--accent)}
+  #start{position:fixed;inset:0;display:grid;place-items:center;background:rgba(6,8,12,.9);
+    padding:0 max(16px,env(safe-area-inset-left,0px)) 0 max(16px,env(safe-area-inset-right,0px))}
+  #start > div{max-width:320px;text-align:center}
+  #start h1{font-size:22px;margin:0 0 8px;letter-spacing:-.01em}
+  #start p{color:var(--dim);margin:0 0 20px}
+  #err{color:#ff8a80;font:12px var(--mono);margin-top:14px;white-space:pre-wrap}
+  button{font:inherit;font-weight:600;padding:13px 24px;border-radius:999px;border:0;background:var(--accent);color:#031c20}
+  button:focus-visible{outline:2px solid #fff;outline-offset:2px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<video id="v" playsinline muted autoplay></video>
+<div id="hud"><span id="st">idle</span><span id="pos"></span></div>
+<div class="ctl">
+  <label>Screen width <input id="sw" type="range" min="50" max="400" value="68"><b id="swv">68</b>mm</label>
+  <label><input id="inv" type="checkbox"> Invert X</label>
+  <label><input id="touch" type="checkbox"> Touch mode (no camera)</label>
+</div>
+<div id="start"><div>
+  <h1>Window Parallax</h1>
+  <p>The front camera tracks your eyes and the screen becomes a window into a 3D room. Hold the phone at arm's length and move your head.</p>
+  <button id="go">Start camera</button>
+  <div id="err"></div>
+</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script type="module">
+// ---------- config ----------
+const IPD_MM = 63;        // average inter-pupillary distance
+const CAM_ABOVE_MM = 8;   // front camera sits this far above the screen's top edge
+const FOCAL_FACTOR = 0.8; // f_px ≈ FOCAL_FACTOR * max(videoW, videoH)  (~70° FOV)
+const DEFAULT_EYE = {x:0, y:0, z:380};
+
+// ---------- state ----------
+let screenW = 68, screenH = 68 * innerHeight / innerWidth;
+let eye = {...DEFAULT_EYE};
+let target = {...DEFAULT_EYE};
+let lastFace = 0;
+let invertX = false, touchMode = false;
+
+const $ = id => document.getElementById(id);
+const canvas = $('c'), video = $('v'), st = $('st'), pos = $('pos');
+
+// ---------- three ----------
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true, powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputEncoding = THREE.sRGBEncoding;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x06080c);
+const camera = new THREE.PerspectiveCamera();
+camera.matrixAutoUpdate = true;
+
+const room = new THREE.Group(); scene.add(room);
+const things = new THREE.Group(); scene.add(things);
+scene.add(new THREE.AmbientLight(0x6688aa, 0.5));
+const key = new THREE.PointLight(0xffffff, 1.1, 0, 2); scene.add(key);
+const fill = new THREE.PointLight(0x4dd0e1, 0.6, 0, 2); scene.add(fill);
+
+function gridLines(w, h, step, color, opacity){
+  const pts = [];
+  const nx = Math.round(w/step), ny = Math.round(h/step);
+  for (let i=0;i<=nx;i++){ const x = -w/2 + i*(w/nx); pts.push(x,-h/2,0, x,h/2,0); }
+  for (let j=0;j<=ny;j++){ const y = -h/2 + j*(h/ny); pts.push(-w/2,y,0, w/2,y,0); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pts,3));
+  return new THREE.LineSegments(g, new THREE.LineBasicMaterial({color, transparent:true, opacity}));
+}
+function wall(w, h, step, position, rotation, tint){
+  const grp = new THREE.Group();
+  const solid = new THREE.Mesh(new THREE.PlaneGeometry(w,h),
+    new THREE.MeshStandardMaterial({color: tint, roughness:.95, metalness:0}));
+  const lines = gridLines(w, h, step, 0x2bd4e8, .28);
+  lines.position.z = 0.5;
+  grp.add(solid, lines);
+  grp.position.copy(position); grp.rotation.set(rotation.x, rotation.y, rotation.z);
+  return grp;
+}
+
+function buildRoom(){
+  while (room.children.length) room.remove(room.children[0]);
+  while (things.children.length) things.remove(things.children[0]);
+  const W = screenW, H = screenH, D = W * 2.2, step = W / 8;
+  const V = (x,y,z)=>new THREE.Vector3(x,y,z), R = (x,y,z)=>({x,y,z});
+  room.add(wall(W, H, step, V(0,0,-D), R(0,0,0), 0x0b1118));                       // back
+  room.add(wall(D, H, step, V(-W/2,0,-D/2), R(0, Math.PI/2,0), 0x0a0f15));          // left
+  room.add(wall(D, H, step, V( W/2,0,-D/2), R(0,-Math.PI/2,0), 0x0a0f15));          // right
+  room.add(wall(W, D, step, V(0,-H/2,-D/2), R(-Math.PI/2,0,0), 0x090d12));          // floor
+  room.add(wall(W, D, step, V(0, H/2,-D/2), R( Math.PI/2,0,0), 0x090d12));          // ceiling
+
+  // window frame at the screen plane
+  const fm = new THREE.MeshStandardMaterial({color:0x1b2733, roughness:.6, metalness:.3});
+  const t = W*0.025;
+  const mk = (w,h,x,y)=>{ const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,t*2), fm); m.position.set(x,y,-t); room.add(m); };
+  mk(W, t, 0,  H/2 - t/2); mk(W, t, 0, -H/2 + t/2); mk(t, H, -W/2 + t/2, 0); mk(t, H, W/2 - t/2, 0);
+
+  // objects at staggered depths
+  const add = (geo, mat, x, y, z, spin) => { const m = new THREE.Mesh(geo, mat); m.position.set(x,y,z); m.userData.spin = spin; things.add(m); return m; };
+  add(new THREE.SphereGeometry(W*0.11, 48, 32),
+      new THREE.MeshStandardMaterial({color:0xff7a3d, emissive:0x3a1200, roughness:.35}), W*0.22, -H*0.12, -D*0.30, 0);
+  add(new THREE.IcosahedronGeometry(W*0.13, 0),
+      new THREE.MeshStandardMaterial({color:0xd84fff, emissive:0x2a0a3a, flatShading:true, roughness:.4}), -W*0.24, H*0.16, -D*0.55, 1);
+  add(new THREE.TorusKnotGeometry(W*0.16, W*0.045, 160, 20),
+      new THREE.MeshStandardMaterial({color:0x4dd0e1, emissive:0x0a2a30, roughness:.3, metalness:.4}), 0, -H*0.05, -D*0.82, 2);
+  add(new THREE.OctahedronGeometry(W*0.07, 0),
+      new THREE.MeshStandardMaterial({color:0xffe066, emissive:0x3a3000, flatShading:true}), W*0.28, H*0.3, -D*0.7, 3);
+  // floating pillars give the floor strong depth cues
+  const pm = new THREE.MeshStandardMaterial({color:0x14202b, roughness:.9});
+  for (let i=0;i<4;i++){
+    const h = H*0.35, p = new THREE.Mesh(new THREE.BoxGeometry(W*0.06, h, W*0.06), pm);
+    p.position.set((i%2?1:-1)*W*0.38, -H/2 + h/2, -D*(0.2 + i*0.2)); room.add(p);
+  }
+  key.position.set(W*0.1, H*0.35, -D*0.25);
+  fill.position.set(-W*0.3, -H*0.2, -D*0.9);
+}
+
+function resize(){
+  renderer.setSize(innerWidth, innerHeight, false);
+  screenH = screenW * innerHeight / innerWidth;
+  buildRoom();
+}
+addEventListener('resize', resize); resize();
+
+// generalized off-axis perspective: eye in mm relative to screen centre, screen plane at z=0
+function applyEye(e){
+  const n = 10, f = 6000, s = n / e.z;
+  camera.projectionMatrix.makePerspective((-screenW/2 - e.x)*s, (screenW/2 - e.x)*s,
+                                          ( screenH/2 - e.y)*s, (-screenH/2 - e.y)*s, n, f);
+  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  camera.position.set(e.x, e.y, e.z);
+  camera.rotation.set(0,0,0);
+}
+
+// ---------- One Euro filter ----------
+class OneEuro{
+  constructor(minCutoff=1.2, beta=0.012, dCutoff=1){ this.mc=minCutoff; this.b=beta; this.dc=dCutoff; this.x=null; this.dx=0; this.t=null; }
+  static a(c, dt){ const r = 2*Math.PI*c*dt; return r/(r+1); }
+  filter(x, t){
+    if (this.x===null){ this.x=x; this.t=t; return x; }
+    const dt = Math.max(1e-3, (t-this.t)/1000); this.t=t;
+    const dx = (x-this.x)/dt, ad = OneEuro.a(this.dc, dt);
+    this.dx = ad*dx + (1-ad)*this.dx;
+    const cutoff = this.mc + this.b*Math.abs(this.dx), a = OneEuro.a(cutoff, dt);
+    this.x = a*x + (1-a)*this.x; return this.x;
+  }
+}
+const fx = new OneEuro(1.5, .02), fy = new OneEuro(1.5, .02), fz = new OneEuro(0.8, .01);
+
+// ---------- eye estimation from landmarks ----------
+function eyeFromLandmarks(lm, vw, vh, t){
+  const a = lm[468], b = lm[473];            // iris centres
+  if (!a || !b) return null;
+  const cx = (a.x+b.x)/2, cy = (a.y+b.y)/2;
+  const ipdPx = Math.hypot((a.x-b.x)*vw, (a.y-b.y)*vh);
+  if (ipdPx < 4) return null;
+  const f = FOCAL_FACTOR * Math.max(vw, vh);
+  const z = Math.min(1200, Math.max(120, f * IPD_MM / ipdPx));
+  let x = -(cx-0.5)*vw * z/f;                // raw front-camera frame is unmirrored
+  let y = -(cy-0.5)*vh * z/f + screenH/2 + CAM_ABOVE_MM;
+  if (invertX) x = -x;
+  return { x: fx.filter(x,t), y: fy.filter(y,t), z: fz.filter(z,t) };
+}
+
+// ---------- tracking ----------
+let landmarker = null, lastVT = -1, frames = 0, fpsT = performance.now(), fps = 0;
+async function startCamera(){
+  const err = $('err'); err.textContent = '';
+  if (!isSecureContext || !navigator.mediaDevices?.getUserMedia){
+    err.textContent = 'Camera needs HTTPS (or localhost). Open this file from an https:// host.'; return;
+  }
+  try{
+    $('go').disabled = true; st.textContent = 'loading model…';
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:640}, height:{ideal:480}}, audio:false});
+    video.srcObject = stream; await video.play(); video.style.display = 'block';
+    const mp = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14');
+    const vision = await mp.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+    landmarker = await mp.FaceLandmarker.createFromOptions(vision, {
+      baseOptions:{ modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task', delegate:'GPU' },
+      runningMode:'VIDEO', numFaces:1, outputFaceBlendshapes:false, outputFacialTransformationMatrixes:false });
+    $('start').hidden = true; st.textContent = 'tracking';
+  }catch(e){
+    $('go').disabled = false; st.textContent = 'idle';
+    err.textContent = (e && e.message) ? e.message : String(e);
+  }
+}
+$('go').onclick = startCamera;
+
+function track(t){
+  if (!landmarker || touchMode || video.readyState < 2 || video.currentTime === lastVT) return;
+  lastVT = video.currentTime;
+  const res = landmarker.detectForVideo(video, t);
+  frames++; if (t - fpsT > 1000){ fps = frames; frames = 0; fpsT = t; }
+  const lm = res.faceLandmarks && res.faceLandmarks[0];
+  if (lm){ const e = eyeFromLandmarks(lm, video.videoWidth, video.videoHeight, t); if (e){ target = e; lastFace = t; } }
+}
+
+// ---------- touch fallback ----------
+addEventListener('pointermove', ev => {
+  if (!touchMode) return;
+  target = { x: (ev.clientX/innerWidth - .5) * screenW * 4, y: -(ev.clientY/innerHeight - .5) * screenH * 4, z: 350 };
+  lastFace = performance.now();
+});
+$('touch').onchange = e => { touchMode = e.target.checked; if (touchMode) $('start').hidden = true; st.textContent = touchMode ? 'touch' : (landmarker ? 'tracking' : 'idle'); };
+$('inv').onchange = e => { invertX = e.target.checked; };
+$('sw').oninput = e => { screenW = +e.target.value; $('swv').textContent = screenW; resize(); };
+
+// ---------- loop ----------
+function loop(t){
+  requestAnimationFrame(loop);
+  track(t);
+  if (t - lastFace > 600) target = {...DEFAULT_EYE};          // lost face: ease back to centre
+  const k = 0.35;
+  eye.x += (target.x - eye.x)*k; eye.y += (target.y - eye.y)*k; eye.z += (target.z - eye.z)*k;
+  applyEye(eye);
+  things.children.forEach((m,i) => { const s = 0.0004*(1+m.userData.spin*0.3); m.rotation.y += s*16; m.rotation.x += s*7; m.position.y += Math.sin(t*0.001 + i)*0.03; });
+  renderer.render(scene, camera);
+  pos.textContent = `x ${eye.x.toFixed(0)}  y ${eye.y.toFixed(0)}  z ${eye.z.toFixed(0)}mm  ${fps}fps`;
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
