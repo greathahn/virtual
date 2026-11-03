@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>PEEK</title>
+<style>
+  :root{ --bg:#07080d; --fg:#e8ecf2; --dim:#8d97a8; --accent:#ffd166; --cyan:#4dd0e1; --panel:rgba(7,8,13,.62);
+    --mono:ui-monospace,"SF Mono",Menlo,monospace; }
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);overflow:hidden;
+    font:14px/1.45 system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;-webkit-user-select:none;user-select:none;touch-action:none}
+  canvas#c,canvas#o{position:fixed;inset:0;width:100%;height:100%;display:block}
+  canvas#o{pointer-events:none}
+  #v{position:fixed;left:max(10px,env(safe-area-inset-left,0px));bottom:max(10px,env(safe-area-inset-bottom,0px));
+    width:72px;height:96px;object-fit:cover;border:1px solid #223;border-radius:8px;opacity:.7;transform:scaleX(-1);display:none}
+  #hud{position:fixed;top:0;left:0;right:0;padding:calc(10px + env(safe-area-inset-top,0px)) max(14px,env(safe-area-inset-right,0px)) 0 max(14px,env(safe-area-inset-left,0px));
+    display:flex;justify-content:space-between;align-items:flex-start;gap:10px;pointer-events:none;font-variant-numeric:tabular-nums}
+  #hud .lv{font-weight:700;font-size:15px;letter-spacing:.02em}
+  #hud .sub{font:11px var(--mono);color:var(--dim)}
+  #gems{display:flex;gap:5px;margin-top:4px}
+  #gems i{width:10px;height:10px;border-radius:2px;transform:rotate(45deg);background:#2a3140;border:1px solid #3a4356}
+  #gems i.on{background:var(--accent);border-color:#fff3c4;box-shadow:0 0 8px var(--accent)}
+  #hint{position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);font-size:34px;font-weight:800;text-align:center;
+    text-shadow:0 2px 18px rgba(0,0,0,.8);pointer-events:none;opacity:0;transition:opacity .25s}
+  #hint small{display:block;font-size:14px;font-weight:500;color:var(--dim)}
+  .ctl{position:fixed;bottom:0;right:0;padding:0 max(12px,env(safe-area-inset-right,0px)) calc(10px + env(safe-area-inset-bottom,0px)) 0;
+    display:flex;flex-direction:column;gap:6px;align-items:flex-end;font-size:12px}
+  .ctl label,.ctl button.sm{display:flex;gap:8px;align-items:center;background:var(--panel);padding:6px 10px;border-radius:8px;backdrop-filter:blur(6px);color:var(--fg)}
+  .ctl b{font:11px var(--mono);min-width:3.5ch;text-align:right}
+  input[type=range]{width:96px;accent-color:var(--accent)}
+  input[type=checkbox]{accent-color:var(--accent)}
+  button{font:inherit;font-weight:700;padding:13px 24px;border-radius:999px;border:0;background:var(--accent);color:#2b2000}
+  button.sm{font-weight:600;padding:8px 14px;background:var(--panel);color:var(--fg);border:1px solid #2a3140;pointer-events:auto}
+  button:focus-visible{outline:2px solid #fff;outline-offset:2px}
+  .ov{position:fixed;inset:0;display:grid;place-items:center;background:rgba(7,8,13,.9);
+    padding:0 max(16px,env(safe-area-inset-left,0px)) 0 max(16px,env(safe-area-inset-right,0px))}
+  .ov[hidden]{display:none}
+  .ov > div{max-width:320px;text-align:center}
+  .ov h1{font-size:30px;margin:0 0 6px;letter-spacing:.08em}
+  .ov h2{font-size:22px;margin:0 0 6px}
+  .ov p{color:var(--dim);margin:0 0 18px}
+  #msg{color:var(--dim);font:12px var(--mono);margin-top:14px}
+  #err{color:#ff8a80;font:12px var(--mono);margin-top:8px;white-space:pre-wrap}
+  .big{font:700 40px var(--mono);color:var(--accent);margin:6px 0 14px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<canvas id="o"></canvas>
+<video id="v" playsinline muted autoplay></video>
+
+<div id="hud">
+  <div><div class="lv" id="lv">LEVEL 1</div><div id="gems"></div></div>
+  <div style="text-align:right"><div class="lv" id="time">0.0</div><div class="sub" id="st">idle</div></div>
+</div>
+<div id="hint"></div>
+
+<div class="ctl">
+  <button class="sm" id="hintBtn">힌트</button>
+  <label>화면 폭 <input id="sw" type="range" min="50" max="400" value="68"><b id="swv">68</b>mm</label>
+  <label><input id="inv" type="checkbox"> X 반전</label>
+  <label><input id="touch" type="checkbox"> 터치 모드</label>
+</div>
+
+<div class="ov" id="start"><div>
+  <h1>PEEK</h1>
+  <p>화면 너머의 방에 보석이 숨어 있습니다. 정면에서는 안 보여요.<br>폰을 팔 길이만큼 들고 고개를 움직여 기둥 뒤를 엿보세요.<br>보석이 보이는 채로 잠깐 있으면 획득.</p>
+  <button id="go">카메라 시작</button>
+  <div id="msg"></div><div id="err"></div>
+</div></div>
+
+<div class="ov" id="clear" hidden><div>
+  <h2 id="clearTitle">LEVEL 1 CLEAR</h2>
+  <div class="big" id="clearTime">0.0s</div>
+  <button id="next">다음 레벨</button>
+</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script type="module">
+// ---------- config ----------
+const IPD_MM = 63, CAM_ABOVE_MM = 8, FOCAL_FACTOR = 0.8;
+const DEFAULT_EYE = {x:0, y:0, z:380};
+const DWELL_MS = 600;
+// eye positions a seated player can reach (mm, relative to screen centre)
+const REACH = { xs:[-230,-115,0,115,230], ys:[-130,0,130,250], zs:[260,380] };
+
+// ---------- state ----------
+let screenW = 68, screenH = 68 * innerHeight / innerWidth;
+let eye = {...DEFAULT_EYE}, target = {...DEFAULT_EYE}, lastFace = 0;
+let invertX = false, touchMode = false, running = false;
+let level = 1, gems = [], occluders = [], foundCount = 0, levelStart = 0, hintUntil = 0;
+
+const $ = id => document.getElementById(id);
+const canvas = $('c'), overlay = $('o'), octx = overlay.getContext('2d'), video = $('v'), st = $('st');
+
+// ---------- three ----------
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true, powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputEncoding = THREE.sRGBEncoding;
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x07080d);
+const camera = new THREE.PerspectiveCamera();
+const room = new THREE.Group(), props = new THREE.Group(), gemGroup = new THREE.Group();
+scene.add(room, props, gemGroup);
+scene.add(new THREE.AmbientLight(0x7788aa, 0.55));
+const key = new THREE.PointLight(0xfff2dc, 1.0, 0, 2), fill = new THREE.PointLight(0x4dd0e1, 0.5, 0, 2);
+scene.add(key, fill);
+
+function gridLines(w, h, step, color, opacity){
+  const pts = [], nx = Math.max(1, Math.round(w/step)), ny = Math.max(1, Math.round(h/step));
+  for (let i=0;i<=nx;i++){ const x = -w/2 + i*(w/nx); pts.push(x,-h/2,0, x,h/2,0); }
+  for (let j=0;j<=ny;j++){ const y = -h/2 + j*(h/ny); pts.push(-w/2,y,0, w/2,y,0); }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pts,3));
+  return new THREE.LineSegments(g, new THREE.LineBasicMaterial({color, transparent:true, opacity}));
+}
+function wall(w, h, step, position, rotation, tint){
+  const grp = new THREE.Group();
+  grp.add(new THREE.Mesh(new THREE.PlaneGeometry(w,h), new THREE.MeshStandardMaterial({color:tint, roughness:.95})));
+  const lines = gridLines(w, h, step, 0x3a4a66, .35); lines.position.z = 0.5; grp.add(lines);
+  grp.position.copy(position); grp.rotation.set(rotation.x, rotation.y, rotation.z);
+  return grp;
+}
+function clearGroup(g){ while (g.children.length) g.remove(g.children[0]); }
+
+function buildRoom(){
+  clearGroup(room);
+  const W = screenW, H = screenH, D = W * 2.5, step = W / 8;
+  const V = (x,y,z)=>new THREE.Vector3(x,y,z), R = (x,y,z)=>({x,y,z});
+  room.add(wall(W, H, step, V(0,0,-D), R(0,0,0), 0x0c1119));
+  room.add(wall(D, H, step, V(-W/2,0,-D/2), R(0, Math.PI/2,0), 0x0b0f16));
+  room.add(wall(D, H, step, V( W/2,0,-D/2), R(0,-Math.PI/2,0), 0x0b0f16));
+  room.add(wall(W, D, step, V(0,-H/2,-D/2), R(-Math.PI/2,0,0), 0x0a0d13));
+  room.add(wall(W, D, step, V(0, H/2,-D/2), R( Math.PI/2,0,0), 0x0a0d13));
+  const fm = new THREE.MeshStandardMaterial({color:0x1c2634, roughness:.6, metalness:.3}), t = W*0.025;
+  const mk = (w,h,x,y)=>{ const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,t*2), fm); m.position.set(x,y,-t); room.add(m); };
+  mk(W,t,0,H/2-t/2); mk(W,t,0,-H/2+t/2); mk(t,H,-W/2+t/2,0); mk(t,H,W/2-t/2,0);
+  key.position.set(W*0.15, H*0.4, -D*0.2); fill.position.set(-W*0.3, -H*0.3, -D*0.9);
+}
+
+// ---------- visibility ----------
+const ray = new THREE.Raycaster();
+const _dir = new THREE.Vector3(), _o = new THREE.Vector3();
+function visibleFrom(e, p, r){
+  // ray must pass through the screen window (z=0) ...
+  const t = e.z / (e.z - p.z); if (t <= 0 || t >= 1) return false;
+  const wx = e.x + (p.x - e.x)*t, wy = e.y + (p.y - e.y)*t;
+  const m = screenW*0.03;
+  if (Math.abs(wx) > screenW/2 - m || Math.abs(wy) > screenH/2 - m) return false;
+  // ... and not hit an occluder before reaching the gem
+  _o.set(e.x, e.y, e.z); _dir.set(p.x-e.x, p.y-e.y, p.z-e.z);
+  const dist = _dir.length(); _dir.divideScalar(dist);
+  ray.set(_o, _dir); ray.near = 1; ray.far = dist - r;
+  return ray.intersectObjects(occluders, false).length === 0;
+}
+function reachableFrom(p, r){
+  for (const z of REACH.zs) for (const y of REACH.ys) for (const x of REACH.xs)
+    if (visibleFrom({x,y,z}, p, r)) return {x,y,z};
+  return null;
+}
+
+// ---------- level ----------
+const rand = (a,b) => a + Math.random()*(b-a);
+const GEM_COLORS = [0xffd166, 0x4dd0e1, 0xff7aa2, 0x9bff8a, 0xc58cff, 0xff9f43];
+function buildLevel(){
+  clearGroup(props); clearGroup(gemGroup); occluders = []; gems = []; foundCount = 0;
+  const W = screenW, H = screenH, D = W * 2.5;
+  const pm = new THREE.MeshStandardMaterial({color:0x1a2230, roughness:.85});
+  const pm2 = new THREE.MeshStandardMaterial({color:0x242e3f, roughness:.8});
+  const nPillars = 3 + level, nGems = 2 + Math.min(level, 6);
+  const addBox = (w,h,d,x,y,z,mat) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), mat); m.position.set(x,y,z); props.add(m); occluders.push(m); return m; };
+  // floor pillars
+  for (let i=0;i<nPillars;i++){
+    const w = W*rand(.08,.16), h = H*rand(.45,1.0), z = -D*rand(.15,.8);
+    addBox(w, h, w, rand(-W*.42, W*.42), -H/2 + h/2, z, pm);
+  }
+  // ceiling slabs + a floating shelf
+  for (let i=0;i<Math.ceil(level/2);i++){
+    const w = W*rand(.25,.5), h = H*rand(.12,.3);
+    addBox(w, h, W*.05, rand(-W*.3,W*.3), H/2 - h/2, -D*rand(.2,.7), pm2);
+  }
+  addBox(W*rand(.3,.6), H*.04, W*.25, rand(-W*.2,W*.2), rand(-H*.3,H*.3), -D*rand(.3,.7), pm2);
+
+  // gems: hidden from the default eye, visible from somewhere reachable
+  const r = W*0.045, eye0 = DEFAULT_EYE, pillars = props.children;
+  for (let g=0; g<nGems; g++){
+    let placed = null;
+    for (let a=0; a<400 && !placed; a++){
+      const p = pillars[Math.floor(Math.random()*pillars.length)];
+      const dir = new THREE.Vector3(p.position.x-eye0.x, p.position.y-eye0.y, p.position.z-eye0.z).normalize();
+      const bb = new THREE.Box3().setFromObject(p), size = bb.getSize(new THREE.Vector3());
+      const pos = p.position.clone().add(dir.multiplyScalar(Math.max(size.x,size.z)/2 + r + rand(8, 50)));
+      pos.x += rand(-size.x*.35, size.x*.35); pos.y += rand(-size.y*.3, size.y*.3);
+      pos.y = Math.max(-H/2 + r*1.5, Math.min(H/2 - r*1.5, pos.y));
+      if (Math.abs(pos.x) > W/2 - r*1.5 || pos.z > -W*.15 || pos.z < -D + r*1.5) continue;
+      if (visibleFrom(eye0, pos, r)) continue;
+      if (gems.some(o => o.mesh.position.distanceTo(pos) < r*3)) continue;
+      const from = reachableFrom(pos, r); if (!from) continue;
+      placed = {pos, from};
+    }
+    if (!placed) continue; // rare: skip this gem
+    const color = GEM_COLORS[g % GEM_COLORS.length];
+    const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 0),
+      new THREE.MeshStandardMaterial({color, emissive:color, emissiveIntensity:.35, flatShading:true, roughness:.3, metalness:.2}));
+    mesh.position.copy(placed.pos); gemGroup.add(mesh);
+    gems.push({mesh, r, from:placed.from, found:false, dwell:0, lastSeen:0, scale:1});
+  }
+  $('lv').textContent = 'LEVEL ' + level;
+  $('gems').innerHTML = gems.map(()=>'<i></i>').join('');
+  levelStart = performance.now(); hintUntil = 0;
+}
+
+function resize(){
+  renderer.setSize(innerWidth, innerHeight, false);
+  const dpr = Math.min(devicePixelRatio, 2);
+  overlay.width = innerWidth*dpr; overlay.height = innerHeight*dpr; octx.setTransform(dpr,0,0,dpr,0,0);
+  screenH = screenW * innerHeight / innerWidth;
+  buildRoom(); buildLevel();
+}
+addEventListener('resize', resize); resize();
+
+function applyEye(e){
+  const n = 10, f = 6000, s = n / e.z;
+  camera.projectionMatrix.makePerspective((-screenW/2 - e.x)*s, (screenW/2 - e.x)*s, (screenH/2 - e.y)*s, (-screenH/2 - e.y)*s, n, f);
+  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  camera.position.set(e.x, e.y, e.z); camera.rotation.set(0,0,0); camera.updateMatrixWorld();
+}
+
+// ---------- One Euro ----------
+class OneEuro{
+  constructor(mc=1.2, b=0.012, dc=1){ this.mc=mc; this.b=b; this.dc=dc; this.x=null; this.dx=0; this.t=null; }
+  static a(c, dt){ const r = 2*Math.PI*c*dt; return r/(r+1); }
+  filter(x, t){
+    if (this.x===null){ this.x=x; this.t=t; return x; }
+    const dt = Math.max(1e-3,(t-this.t)/1000); this.t=t;
+    const dx=(x-this.x)/dt, ad=OneEuro.a(this.dc,dt); this.dx=ad*dx+(1-ad)*this.dx;
+    const a=OneEuro.a(this.mc + this.b*Math.abs(this.dx), dt); this.x=a*x+(1-a)*this.x; return this.x;
+  }
+}
+const fx = new OneEuro(1.5,.02), fy = new OneEuro(1.5,.02), fz = new OneEuro(0.8,.01);
+
+function eyeFromLandmarks(lm, vw, vh, t){
+  const a = lm[468], b = lm[473]; if (!a || !b) return null;
+  const cx=(a.x+b.x)/2, cy=(a.y+b.y)/2, ipdPx = Math.hypot((a.x-b.x)*vw,(a.y-b.y)*vh);
+  if (ipdPx < 4) return null;
+  const f = FOCAL_FACTOR*Math.max(vw,vh), z = Math.min(1200, Math.max(120, f*IPD_MM/ipdPx));
+  let x = -(cx-0.5)*vw*z/f, y = -(cy-0.5)*vh*z/f + screenH/2 + CAM_ABOVE_MM;
+  if (invertX) x = -x;
+  return { x:fx.filter(x,t), y:fy.filter(y,t), z:fz.filter(z,t) };
+}
+
+// ---------- audio ----------
+let ac = null;
+function blip(freq=880, dur=.12, type='triangle', gain=.18){
+  if (!ac) return; const o = ac.createOscillator(), g = ac.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, ac.currentTime); o.frequency.exponentialRampToValueAtTime(freq*1.5, ac.currentTime+dur);
+  g.gain.setValueAtTime(gain, ac.currentTime); g.gain.exponentialRampToValueAtTime(.001, ac.currentTime+dur);
+  o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime+dur);
+}
+
+// ---------- camera / tracking ----------
+let landmarker = null, lastVT = -1, frames = 0, fpsT = performance.now(), fps = 0;
+async function startCamera(){
+  const err = $('err'), msg = $('msg'); err.textContent = '';
+  const say = t => { msg.textContent = t; st.textContent = t; };
+  try{ ac = ac || new (window.AudioContext||window.webkitAudioContext)(); ac.resume(); }catch(e){}
+  if (!isSecureContext || !navigator.mediaDevices?.getUserMedia){ err.textContent = '카메라는 https 주소에서만 열립니다.'; return; }
+  try{
+    $('go').disabled = true; say('카메라 여는 중…');
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:640}, height:{ideal:480}}, audio:false});
+    video.srcObject = stream; await video.play(); video.style.display = 'block';
+    say('트래커 불러오는 중 (~5 MB)…');
+    const mod = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
+    const mp = mod.FaceLandmarker ? mod : mod.default;
+    const vision = await mp.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+    const make = delegate => mp.FaceLandmarker.createFromOptions(vision, {
+      baseOptions:{ modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task', delegate },
+      runningMode:'VIDEO', numFaces:1 });
+    try { landmarker = await make('GPU'); } catch(e){ say('GPU 실패, CPU로…'); landmarker = await make('CPU'); }
+    $('start').hidden = true; st.textContent = 'tracking'; running = true; levelStart = performance.now();
+  }catch(e){ $('go').disabled = false; say('idle'); err.textContent = (e && e.message) ? e.message : String(e); }
+}
+$('go').onclick = startCamera;
+
+function track(t){
+  if (!landmarker || touchMode || video.readyState < 2 || video.currentTime === lastVT) return;
+  lastVT = video.currentTime;
+  const res = landmarker.detectForVideo(video, t);
+  frames++; if (t - fpsT > 1000){ fps = frames; frames = 0; fpsT = t; }
+  const lm = res.faceLandmarks && res.faceLandmarks[0];
+  if (lm){ const e = eyeFromLandmarks(lm, video.videoWidth, video.videoHeight, t); if (e){ target = e; lastFace = t; } }
+}
+
+// ---------- controls ----------
+addEventListener('pointermove', ev => {
+  if (!touchMode) return;
+  target = { x:(ev.clientX/innerWidth-.5)*screenW*5, y:-(ev.clientY/innerHeight-.5)*screenH*5, z:340 };
+  lastFace = performance.now();
+});
+$('touch').onchange = e => { touchMode = e.target.checked;
+  if (touchMode){ $('start').hidden = true; running = true; levelStart = performance.now(); try{ ac = ac || new (window.AudioContext||window.webkitAudioContext)(); }catch(_){} }
+  st.textContent = touchMode ? 'touch' : (landmarker ? 'tracking' : 'idle'); };
+$('inv').onchange = e => { invertX = e.target.checked; };
+$('sw').oninput = e => { screenW = +e.target.value; $('swv').textContent = screenW; resize(); };
+$('next').onclick = () => { level++; $('clear').hidden = true; buildLevel(); running = true; };
+$('hintBtn').onclick = () => {
+  const g = gems.find(x => !x.found); if (!g) return;
+  const dx = g.from.x - eye.x, dy = g.from.y - eye.y, dz = g.from.z - eye.z;
+  let arrow, text;
+  if (Math.abs(dx) >= Math.abs(dy) && Math.abs(dx) >= Math.abs(dz)*0.6){ arrow = dx > 0 ? '→' : '←'; text = dx > 0 ? '오른쪽으로 고개를' : '왼쪽으로 고개를'; }
+  else if (Math.abs(dy) >= Math.abs(dz)*0.6){ arrow = dy > 0 ? '↑' : '↓'; text = dy > 0 ? '위에서 내려다보기' : '아래에서 올려다보기'; }
+  else { arrow = dz > 0 ? '↔' : '◎'; text = dz > 0 ? '조금 멀리서' : '조금 가까이서'; }
+  $('hint').innerHTML = arrow + '<small>' + text + '</small>'; hintUntil = performance.now() + 2500;
+};
+
+// ---------- loop ----------
+let lastT = performance.now();
+function loop(t){
+  requestAnimationFrame(loop);
+  const dt = Math.min(50, t - lastT); lastT = t;
+  track(t);
+  if (t - lastFace > 600) target = {...DEFAULT_EYE};
+  const k = 0.35; eye.x += (target.x-eye.x)*k; eye.y += (target.y-eye.y)*k; eye.z += (target.z-eye.z)*k;
+  applyEye(eye);
+
+  octx.clearRect(0,0,innerWidth,innerHeight);
+  if (running){
+    for (const g of gems){
+      g.mesh.rotation.y += 0.02; g.mesh.rotation.x += 0.011;
+      if (g.found){ g.scale = Math.max(0, g.scale - dt/350); g.mesh.scale.setScalar(g.scale); if (g.scale===0) g.mesh.visible=false; continue; }
+      const vis = visibleFrom(eye, g.mesh.position, g.r);
+      if (vis){ g.dwell += dt; g.lastSeen = t; g.mesh.material.emissiveIntensity = .9; }
+      else { if (t - g.lastSeen > 150) g.dwell = Math.max(0, g.dwell - dt*2); g.mesh.material.emissiveIntensity = .35; }
+      if (g.dwell >= DWELL_MS){
+        g.found = true; foundCount++; blip(660 + foundCount*120, .18); blip(990 + foundCount*120, .25, 'sine', .1);
+        $('gems').children[gems.indexOf(g)].classList.add('on');
+      } else if (g.dwell > 0 && vis){
+        // progress ring at the gem's screen position
+        const v = g.mesh.position.clone().project(camera);
+        const sx = (v.x+1)/2*innerWidth, sy = (1-v.y)/2*innerHeight, R = 22;
+        octx.lineWidth = 3; octx.strokeStyle = 'rgba(255,255,255,.25)';
+        octx.beginPath(); octx.arc(sx, sy, R, 0, Math.PI*2); octx.stroke();
+        octx.strokeStyle = '#ffd166';
+        octx.beginPath(); octx.arc(sx, sy, R, -Math.PI/2, -Math.PI/2 + Math.PI*2*g.dwell/DWELL_MS); octx.stroke();
+      }
+    }
+    if (gems.length && foundCount === gems.length){
+      running = false; const sec = (t - levelStart)/1000;
+      $('clearTitle').textContent = 'LEVEL ' + level + ' CLEAR'; $('clearTime').textContent = sec.toFixed(1) + 's';
+      setTimeout(() => { $('clear').hidden = false; }, 500);
+    }
+    $('time').textContent = ((t - levelStart)/1000).toFixed(1);
+  }
+  $('hint').style.opacity = t < hintUntil ? 1 : 0;
+  renderer.render(scene, camera);
+  if (running) st.textContent = (touchMode ? 'touch' : fps + 'fps') + ` · z ${eye.z.toFixed(0)}`;
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
