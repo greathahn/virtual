@@ -42,6 +42,12 @@
   #msg{color:var(--dim);font:12px var(--mono);margin-top:14px}
   #err{color:#ff8a80;font:12px var(--mono);margin-top:8px;white-space:pre-wrap}
   .big{font:700 40px var(--mono);color:var(--accent);margin:6px 0 14px}
+  /* calibration overlay: translucent so the room stays visible */
+  #calib{background:rgba(7,8,13,.55)}
+  .dirs{display:grid;grid-template-columns:repeat(3,56px);grid-template-rows:repeat(3,56px);gap:6px;justify-content:center;margin:14px 0}
+  .dirs i{display:grid;place-items:center;font-size:24px;font-style:normal;border-radius:10px;background:rgba(255,255,255,.06);color:var(--dim);transition:all .2s}
+  .dirs i.on{background:var(--accent);color:#2b2000;transform:scale(1.05)}
+  .dirs i.c{background:none;font-size:12px}
 </style>
 </head>
 <body>
@@ -57,6 +63,7 @@
 
 <div class="ctl">
   <button class="sm" id="hintBtn">힌트</button>
+  <button class="sm" id="recal">범위 다시 측정</button>
   <label>화면 폭 <input id="sw" type="range" min="50" max="400" value="68"><b id="swv">68</b>mm</label>
   <label><input id="inv" type="checkbox"> X 반전</label>
   <label><input id="touch" type="checkbox"> 터치 모드</label>
@@ -67,6 +74,17 @@
   <p>화면 너머의 방에 보석이 숨어 있습니다. 정면에서는 안 보여요.<br>폰을 팔 길이만큼 들고 고개를 움직여 기둥 뒤를 엿보세요.<br>보석이 보이는 채로 잠깐 있으면 획득.</p>
   <button id="go">카메라 시작</button>
   <div id="msg"></div><div id="err"></div>
+</div></div>
+
+<div class="ov" id="calib" hidden><div>
+  <h2>범위 측정</h2>
+  <p>폰은 그대로 두고, 고개를 <b>왼쪽·오른쪽·위·아래</b>로<br>편하게 움직일 수 있는 만큼 움직여 주세요.</p>
+  <div class="dirs">
+    <i></i><i id="dU">↑</i><i></i>
+    <i id="dL">←</i><i class="c" id="dC">정면</i><i id="dR">→</i>
+    <i></i><i id="dD">↓</i><i></i>
+  </div>
+  <div id="cmsg" class="sub" style="color:var(--dim);font:12px var(--mono)"></div>
 </div></div>
 
 <div class="ov" id="clear" hidden><div>
@@ -80,17 +98,15 @@
 // ---------- config ----------
 const IPD_MM = 63, CAM_ABOVE_MM = 8, FOCAL_FACTOR = 0.8;
 const DEFAULT_EYE = {x:0, y:0, z:380};
-const DWELL_MS = 600;
-// conservative head-movement range (mm); replaced by the observed range once the player has moved
-const REACH_DEFAULT = { x:[-120,120], y:[-60,110], dz:40 };
-const RELOCATE_MS = 25000;
-let obs = null; // observed eye range while tracking
+const DWELL_MS = 600, RELOCATE_MS = 15000;
+const CAL = { x:55, up:45, down:35, timeout:8000 };   // mm of head movement that counts, and max wait
 
 // ---------- state ----------
 let screenW = 68, screenH = 68 * innerHeight / innerWidth;
 let eye = {...DEFAULT_EYE}, target = {...DEFAULT_EYE}, lastFace = 0;
 let invertX = false, touchMode = false, running = false;
 let level = 1, gems = [], occluders = [], foundCount = 0, levelStart = 0, hintUntil = 0;
+let obs = null, rest = null, calib = null;   // observed eye range, resting pose, calibration progress
 
 const $ = id => document.getElementById(id);
 const canvas = $('c'), overlay = $('o'), octx = overlay.getContext('2d'), video = $('v'), st = $('st');
@@ -142,41 +158,56 @@ function buildRoom(){
 const ray = new THREE.Raycaster();
 const _dir = new THREE.Vector3(), _o = new THREE.Vector3();
 function visibleFrom(e, p, r){
-  // ray must pass through the screen window (z=0) ...
   const t = e.z / (e.z - p.z); if (t <= 0 || t >= 1) return false;
-  const wx = e.x + (p.x - e.x)*t, wy = e.y + (p.y - e.y)*t;
-  const m = screenW*0.08;
+  const wx = e.x + (p.x - e.x)*t, wy = e.y + (p.y - e.y)*t, m = screenW*0.08;
   if (Math.abs(wx) > screenW/2 - m || Math.abs(wy) > screenH/2 - m) return false;
-  // ... and not hit an occluder before reaching the gem
   _o.set(e.x, e.y, e.z); _dir.set(p.x-e.x, p.y-e.y, p.z-e.z);
   const dist = _dir.length(); _dir.divideScalar(dist);
   ray.set(_o, _dir); ray.near = 1; ray.far = dist - r;
   return ray.intersectObjects(occluders, false).length === 0;
 }
+// the viewpoints this player can actually produce, from the calibration/observed range
 function reachRange(){
-  const z0 = (eye && eye.z) || DEFAULT_EYE.z;
-  let x = REACH_DEFAULT.x, y = REACH_DEFAULT.y, z = [z0 - REACH_DEFAULT.dz, z0 + REACH_DEFAULT.dz];
-  if (obs && obs.maxX - obs.minX > 100 && obs.maxY - obs.minY > 60){
-    const sx = (obs.maxX-obs.minX)*0.12, sy = (obs.maxY-obs.minY)*0.12;
+  const r0 = rest || DEFAULT_EYE;
+  let x, y, z;
+  if (obs && obs.maxX - obs.minX > 60 && obs.maxY - obs.minY > 40){
+    const sx = (obs.maxX-obs.minX)*0.15, sy = (obs.maxY-obs.minY)*0.15;
     x = [obs.minX+sx, obs.maxX-sx]; y = [obs.minY+sy, obs.maxY-sy];
-    z = [Math.max(150, obs.minZ+20), obs.maxZ-20]; if (z[1] - z[0] < 40) z = [z0-20, z0+20];
-  }
+    z = [Math.max(120, Math.min(obs.minZ+15, r0.z-25)), Math.max(obs.maxZ-15, r0.z+25)];
+  } else { x = [r0.x-70, r0.x+70]; y = [r0.y-40, r0.y+60]; z = [r0.z-25, r0.z+25]; }
   const lin = (a,n) => Array.from({length:n}, (_,i) => a[0] + (a[1]-a[0])*i/(n-1));
-  return { xs:lin(x,5), ys:lin(y,4), zs:lin(z,3), z0 };
+  return { xs:lin(x,6), ys:lin(y,5), zs:lin(z,3), rest:r0 };
 }
 function reachableFrom(p, r, R){
   const seen = [];
   for (const z of R.zs) for (const y of R.ys) for (const x of R.xs)
     if (visibleFrom({x,y,z}, p, r)) seen.push({x,y,z});
-  if (seen.length < 2) return null;
-  // hint target: the easiest viewpoint, i.e. nearest to looking straight on
-  seen.sort((a,b) => (a.x*a.x+a.y*a.y+(a.z-R.z0)**2) - (b.x*b.x+b.y*b.y+(b.z-R.z0)**2));
+  if (seen.length < 3) return null;
+  const d = a => (a.x-R.rest.x)**2 + (a.y-R.rest.y)**2 + (a.z-R.rest.z)**2;
+  seen.sort((a,b) => d(a) - d(b));
   return seen[0];
 }
 
 // ---------- level ----------
 const rand = (a,b) => a + Math.random()*(b-a);
 const GEM_COLORS = [0xffd166, 0x4dd0e1, 0xff7aa2, 0x9bff8a, 0xc58cff, 0xff9f43];
+function placeGem(r, avoid){
+  const W = screenW, H = screenH, D = W * 2.5, R = reachRange(), e0 = R.rest, pillars = props.children;
+  for (let a=0; a<600; a++){
+    const p = pillars[Math.floor(Math.random()*pillars.length)];
+    const dir = new THREE.Vector3(p.position.x-e0.x, p.position.y-e0.y, p.position.z-e0.z).normalize();
+    const bb = new THREE.Box3().setFromObject(p), size = bb.getSize(new THREE.Vector3());
+    const pos = p.position.clone().add(dir.multiplyScalar(Math.max(size.x,size.z)/2 + r + rand(6, 36)));
+    pos.x += rand(-size.x*.35, size.x*.35); pos.y += rand(-size.y*.3, size.y*.3);
+    pos.y = Math.max(-H/2 + r*1.5, Math.min(H/2 - r*1.5, pos.y));
+    if (Math.abs(pos.x) > W/2 - r*1.5 || pos.z > -W*.15 || pos.z < -D + r*1.5) continue;
+    if (visibleFrom(e0, pos, r)) continue;
+    if (avoid.some(q => q.distanceTo(pos) < r*3)) continue;
+    const from = reachableFrom(pos, r, R); if (!from) continue;
+    return {pos, from};
+  }
+  return null;
+}
 function buildLevel(){
   clearGroup(props); clearGroup(gemGroup); occluders = []; gems = []; foundCount = 0;
   const W = screenW, H = screenH, D = W * 2.5;
@@ -184,23 +215,20 @@ function buildLevel(){
   const pm2 = new THREE.MeshStandardMaterial({color:0x242e3f, roughness:.8});
   const nPillars = 3 + level, nGems = 2 + Math.min(level, 6);
   const addBox = (w,h,d,x,y,z,mat) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), mat); m.position.set(x,y,z); props.add(m); occluders.push(m); return m; };
-  // floor pillars
   for (let i=0;i<nPillars;i++){
-    const w = W*rand(.08,.16), h = H*rand(.45,1.0), z = -D*rand(.15,.8);
-    addBox(w, h, w, rand(-W*.42, W*.42), -H/2 + h/2, z, pm);
+    const w = W*rand(.08,.16), h = H*rand(.45,1.0);
+    addBox(w, h, w, rand(-W*.42, W*.42), -H/2 + h/2, -D*rand(.15,.8), pm);
   }
-  // ceiling slabs + a floating shelf
   for (let i=0;i<Math.ceil(level/2);i++){
     const w = W*rand(.25,.5), h = H*rand(.12,.3);
     addBox(w, h, W*.05, rand(-W*.3,W*.3), H/2 - h/2, -D*rand(.2,.7), pm2);
   }
   addBox(W*rand(.3,.6), H*.04, W*.25, rand(-W*.2,W*.2), rand(-H*.3,H*.3), -D*rand(.3,.7), pm2);
 
-  // gems: hidden from straight-on, visible from at least two reachable viewpoints
   const r = W*0.045;
   for (let g=0; g<nGems; g++){
     const placed = placeGem(r, gems.map(o => o.mesh.position));
-    if (!placed) continue; // rare: skip this gem
+    if (!placed) continue;
     const color = GEM_COLORS[g % GEM_COLORS.length];
     const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 0),
       new THREE.MeshStandardMaterial({color, emissive:color, emissiveIntensity:.35, flatShading:true, roughness:.3, metalness:.2}));
@@ -211,41 +239,26 @@ function buildLevel(){
   $('gems').innerHTML = gems.map(()=>'<i></i>').join('');
   levelStart = performance.now(); hintUntil = 0;
 }
-
-function placeGem(r, avoid){
-  const W = screenW, H = screenH, D = W * 2.5, R = reachRange();
-  const eye0 = {x:0, y:0, z:R.z0}, pillars = props.children;
-  for (let a=0; a<500; a++){
-    const p = pillars[Math.floor(Math.random()*pillars.length)];
-    const dir = new THREE.Vector3(p.position.x-eye0.x, p.position.y-eye0.y, p.position.z-eye0.z).normalize();
-    const bb = new THREE.Box3().setFromObject(p), size = bb.getSize(new THREE.Vector3());
-    const pos = p.position.clone().add(dir.multiplyScalar(Math.max(size.x,size.z)/2 + r + rand(6, 40)));
-    pos.x += rand(-size.x*.35, size.x*.35); pos.y += rand(-size.y*.3, size.y*.3);
-    pos.y = Math.max(-H/2 + r*1.5, Math.min(H/2 - r*1.5, pos.y));
-    if (Math.abs(pos.x) > W/2 - r*1.5 || pos.z > -W*.15 || pos.z < -D + r*1.5) continue;
-    if (visibleFrom(eye0, pos, r)) continue;
-    if (visibleFrom(DEFAULT_EYE, pos, r)) continue;
-    if (avoid.some(q => q.distanceTo(pos) < r*3)) continue;
-    const from = reachableFrom(pos, r, R); if (!from) continue;
-    return {pos, from};
-  }
-  return null;
-}
 function relocateGem(g){
   const placed = placeGem(g.r, gems.filter(o => o !== g).map(o => o.mesh.position));
   if (!placed) return;
   g.mesh.position.copy(placed.pos); g.from = placed.from; g.dwell = 0; g.born = performance.now();
   $('hint').innerHTML = '✦<small>보석이 자리를 옮겼습니다</small>'; hintUntil = performance.now() + 1800;
 }
+// screen width changed: scale the existing level in place instead of rebuilding it
+function rescaleLevel(factor){
+  for (const m of props.children){ m.position.multiplyScalar(factor); m.scale.multiplyScalar(factor); m.updateMatrixWorld(); }
+  for (const g of gems){ g.mesh.position.multiplyScalar(factor); g.mesh.scale.multiplyScalar(factor); g.r *= factor; }
+}
 
-function resize(){
+function resize(rebuild){
   renderer.setSize(innerWidth, innerHeight, false);
   const dpr = Math.min(devicePixelRatio, 2);
   overlay.width = innerWidth*dpr; overlay.height = innerHeight*dpr; octx.setTransform(dpr,0,0,dpr,0,0);
   screenH = screenW * innerHeight / innerWidth;
-  buildRoom(); buildLevel();
+  buildRoom(); if (rebuild) buildLevel();
 }
-addEventListener('resize', resize); resize();
+addEventListener('resize', () => resize(false)); resize(true);
 
 function applyEye(e){
   const n = 10, f = 6000, s = n / e.z;
@@ -276,6 +289,46 @@ function eyeFromLandmarks(lm, vw, vh, t){
   if (invertX) x = -x;
   return { x:fx.filter(x,t), y:fy.filter(y,t), z:fz.filter(z,t) };
 }
+function observe(e){
+  if (!obs){ obs = {minX:e.x, maxX:e.x, minY:e.y, maxY:e.y, minZ:e.z, maxZ:e.z}; return; }
+  obs.minX = Math.min(obs.minX,e.x); obs.maxX = Math.max(obs.maxX,e.x);
+  obs.minY = Math.min(obs.minY,e.y); obs.maxY = Math.max(obs.maxY,e.y);
+  obs.minZ = Math.min(obs.minZ,e.z); obs.maxZ = Math.max(obs.maxZ,e.z);
+}
+
+// ---------- calibration ----------
+function startCalibration(){
+  obs = null; rest = null; running = false;
+  calib = { t0: performance.now(), L:false, R:false, U:false, D:false, restSamples:[] };
+  for (const k of ['dL','dR','dU','dD']) $(k).classList.remove('on');
+  $('clear').hidden = true; $('calib').hidden = false;
+}
+function stepCalibration(t){
+  const c = calib, fresh = t - lastFace < 300;
+  if (!rest){
+    if (fresh) c.restSamples.push({...target});
+    $('cmsg').textContent = fresh ? '정면을 보고 잠시 멈춰 주세요…' : '얼굴을 카메라에 맞춰 주세요';
+    if (c.restSamples.length >= 20){
+      const s = c.restSamples.slice(-12);
+      rest = { x: s.reduce((a,b)=>a+b.x,0)/s.length, y: s.reduce((a,b)=>a+b.y,0)/s.length, z: s.reduce((a,b)=>a+b.z,0)/s.length };
+      obs = null; observe(rest); c.t0 = t; $('dC').classList.add('on');
+    }
+    return;
+  }
+  if (fresh){
+    observe(target);
+    if (target.x < rest.x - CAL.x) c.L = true;  if (target.x > rest.x + CAL.x) c.R = true;
+    if (target.y > rest.y + CAL.up) c.U = true; if (target.y < rest.y - CAL.down) c.D = true;
+  }
+  $('dL').classList.toggle('on', c.L); $('dR').classList.toggle('on', c.R);
+  $('dU').classList.toggle('on', c.U); $('dD').classList.toggle('on', c.D);
+  const n = [c.L,c.R,c.U,c.D].filter(Boolean).length, left = Math.max(0, (CAL.timeout - (t - c.t0))/1000);
+  $('cmsg').textContent = `${n}/4 · 남은 시간 ${left.toFixed(0)}s · 범위 ${(obs.maxX-obs.minX).toFixed(0)}×${(obs.maxY-obs.minY).toFixed(0)}mm`;
+  if (n === 4 || t - c.t0 > CAL.timeout){
+    calib = null; $('calib').hidden = true;
+    buildLevel(); running = true;
+  }
+}
 
 // ---------- audio ----------
 let ac = null;
@@ -305,7 +358,8 @@ async function startCamera(){
       baseOptions:{ modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task', delegate },
       runningMode:'VIDEO', numFaces:1 });
     try { landmarker = await make('GPU'); } catch(e){ say('GPU 실패, CPU로…'); landmarker = await make('CPU'); }
-    $('start').hidden = true; st.textContent = 'tracking'; running = true; levelStart = performance.now();
+    $('start').hidden = true; st.textContent = 'tracking';
+    startCalibration();
   }catch(e){ $('go').disabled = false; say('idle'); err.textContent = (e && e.message) ? e.message : String(e); }
 }
 $('go').onclick = startCamera;
@@ -316,26 +370,26 @@ function track(t){
   const res = landmarker.detectForVideo(video, t);
   frames++; if (t - fpsT > 1000){ fps = frames; frames = 0; fpsT = t; }
   const lm = res.faceLandmarks && res.faceLandmarks[0];
-  if (lm){ const e = eyeFromLandmarks(lm, video.videoWidth, video.videoHeight, t); if (e){ target = e; lastFace = t; observe(e); } }
-}
-function observe(e){
-  if (!obs){ obs = {minX:e.x, maxX:e.x, minY:e.y, maxY:e.y, minZ:e.z, maxZ:e.z}; return; }
-  obs.minX = Math.min(obs.minX,e.x); obs.maxX = Math.max(obs.maxX,e.x);
-  obs.minY = Math.min(obs.minY,e.y); obs.maxY = Math.max(obs.maxY,e.y);
-  obs.minZ = Math.min(obs.minZ,e.z); obs.maxZ = Math.max(obs.maxZ,e.z);
+  if (lm){ const e = eyeFromLandmarks(lm, video.videoWidth, video.videoHeight, t); if (e){ target = e; lastFace = t; if (running) observe(e); } }
 }
 
 // ---------- controls ----------
 addEventListener('pointermove', ev => {
   if (!touchMode) return;
   target = { x:(ev.clientX/innerWidth-.5)*screenW*4, y:-(ev.clientY/innerHeight-.5)*screenH*4, z:340 };
-  lastFace = performance.now(); observe(target);
+  lastFace = performance.now();
 });
 $('touch').onchange = e => { touchMode = e.target.checked;
-  if (touchMode){ $('start').hidden = true; running = true; levelStart = performance.now(); try{ ac = ac || new (window.AudioContext||window.webkitAudioContext)(); }catch(_){} }
+  if (touchMode){
+    $('start').hidden = true; $('calib').hidden = true; calib = null;
+    try{ ac = ac || new (window.AudioContext||window.webkitAudioContext)(); }catch(_){}
+    rest = {x:0, y:0, z:340}; obs = {minX:-screenW*2, maxX:screenW*2, minY:-screenH*2, maxY:screenH*2, minZ:330, maxZ:350};
+    buildLevel(); running = true;
+  } else if (landmarker) startCalibration();
   st.textContent = touchMode ? 'touch' : (landmarker ? 'tracking' : 'idle'); };
-$('inv').onchange = e => { invertX = e.target.checked; };
-$('sw').oninput = e => { screenW = +e.target.value; $('swv').textContent = screenW; resize(); };
+$('inv').onchange = e => { invertX = e.target.checked; if (landmarker && !touchMode) startCalibration(); };
+$('sw').oninput = e => { const w = +e.target.value, f = w/screenW; screenW = w; $('swv').textContent = w; rescaleLevel(f); resize(false); };
+$('recal').onclick = () => { if (landmarker && !touchMode) startCalibration(); };
 $('next').onclick = () => { level++; $('clear').hidden = true; buildLevel(); running = true; };
 $('hintBtn').onclick = () => {
   const g = gems.find(x => !x.found); if (!g) return;
@@ -353,15 +407,16 @@ function loop(t){
   requestAnimationFrame(loop);
   const dt = Math.min(50, t - lastT); lastT = t;
   track(t);
-  if (t - lastFace > 600) target = {...DEFAULT_EYE};
+  if (t - lastFace > 600) target = rest ? {...rest} : {...DEFAULT_EYE};
   const k = 0.35; eye.x += (target.x-eye.x)*k; eye.y += (target.y-eye.y)*k; eye.z += (target.z-eye.z)*k;
   applyEye(eye);
+  if (calib) stepCalibration(t);
 
   octx.clearRect(0,0,innerWidth,innerHeight);
   if (running){
     for (const g of gems){
       g.mesh.rotation.y += 0.02; g.mesh.rotation.x += 0.011;
-      if (g.found){ g.scale = Math.max(0, g.scale - dt/350); g.mesh.scale.setScalar(g.scale); if (g.scale===0) g.mesh.visible=false; continue; }
+      if (g.found){ g.scale = Math.max(0, g.scale - dt/350); g.mesh.scale.setScalar(g.scale * g.r/(screenW*0.045)); if (g.scale===0) g.mesh.visible=false; continue; }
       const vis = visibleFrom(eye, g.mesh.position, g.r);
       if (vis){ g.dwell += dt; g.lastSeen = t; g.everSeen = true; g.mesh.material.emissiveIntensity = .9; }
       else { if (t - g.lastSeen > 150) g.dwell = Math.max(0, g.dwell - dt*2); g.mesh.material.emissiveIntensity = .35;
@@ -370,7 +425,6 @@ function loop(t){
         g.found = true; foundCount++; blip(660 + foundCount*120, .18); blip(990 + foundCount*120, .25, 'sine', .1);
         $('gems').children[gems.indexOf(g)].classList.add('on');
       } else if (g.dwell > 0 && vis){
-        // progress ring at the gem's screen position
         const v = g.mesh.position.clone().project(camera);
         const sx = (v.x+1)/2*innerWidth, sy = (1-v.y)/2*innerHeight, R = 22;
         octx.lineWidth = 3; octx.strokeStyle = 'rgba(255,255,255,.25)';
@@ -388,7 +442,7 @@ function loop(t){
   }
   $('hint').style.opacity = t < hintUntil ? 1 : 0;
   renderer.render(scene, camera);
-  if (running) st.textContent = (touchMode ? 'touch' : fps + 'fps') + ` · z ${eye.z.toFixed(0)}`;
+  if (running || calib) st.textContent = (touchMode ? 'touch' : fps + 'fps') + ` · ${eye.x.toFixed(0)},${eye.y.toFixed(0)},${eye.z.toFixed(0)}`;
 }
 requestAnimationFrame(loop);
 </script>
