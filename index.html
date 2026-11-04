@@ -96,7 +96,7 @@ function gridLines(w, h, step, color, opacity){
 function wall(w, h, step, position, rotation, tint){
   const grp = new THREE.Group();
   const solid = new THREE.Mesh(new THREE.PlaneGeometry(w,h),
-    new THREE.MeshStandardMaterial({color: tint, roughness:.95, metalness:0}));
+    new THREE.MeshLambertMaterial({color: tint}));
   const lines = gridLines(w, h, step, 0x2bd4e8, .28);
   lines.position.z = 0.5;
   grp.add(solid, lines);

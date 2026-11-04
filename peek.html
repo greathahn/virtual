@@ -119,8 +119,8 @@ const scene = new THREE.Scene(); scene.background = new THREE.Color(0x07080d);
 const camera = new THREE.PerspectiveCamera();
 const room = new THREE.Group(), props = new THREE.Group(), gemGroup = new THREE.Group();
 scene.add(room, props, gemGroup);
-scene.add(new THREE.AmbientLight(0x7788aa, 0.55));
-const key = new THREE.PointLight(0xfff2dc, 1.0, 0, 2), fill = new THREE.PointLight(0x4dd0e1, 0.5, 0, 2);
+scene.add(new THREE.AmbientLight(0x6677aa, 0.35));
+const key = new THREE.PointLight(0xfff2dc, 1.4, 0, 2), fill = new THREE.PointLight(0x4dd0e1, 0.8, 0, 2);
 scene.add(key, fill);
 
 function gridLines(w, h, step, color, opacity){
@@ -132,7 +132,7 @@ function gridLines(w, h, step, color, opacity){
 }
 function wall(w, h, step, position, rotation, tint){
   const grp = new THREE.Group();
-  grp.add(new THREE.Mesh(new THREE.PlaneGeometry(w,h), new THREE.MeshStandardMaterial({color:tint, roughness:.95})));
+  grp.add(new THREE.Mesh(new THREE.PlaneGeometry(w,h), new THREE.MeshLambertMaterial({color:tint})));
   const lines = gridLines(w, h, step, 0x3a4a66, .35); lines.position.z = 0.5; grp.add(lines);
   grp.position.copy(position); grp.rotation.set(rotation.x, rotation.y, rotation.z);
   return grp;
@@ -151,7 +151,7 @@ function buildRoom(){
   const fm = new THREE.MeshStandardMaterial({color:0x1c2634, roughness:.6, metalness:.3}), t = W*0.025;
   const mk = (w,h,x,y)=>{ const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,t*2), fm); m.position.set(x,y,-t); room.add(m); };
   mk(W,t,0,H/2-t/2); mk(W,t,0,-H/2+t/2); mk(t,H,-W/2+t/2,0); mk(t,H,W/2-t/2,0);
-  key.position.set(W*0.15, H*0.4, -D*0.2); fill.position.set(-W*0.3, -H*0.3, -D*0.9);
+  key.position.set(W*0.15, H*0.4, -D*0.2); key.distance = D*1.1; fill.position.set(-W*0.3, -H*0.3, -D*0.9); fill.distance = D*0.9;
 }
 
 // ---------- visibility ----------
@@ -407,7 +407,7 @@ function loop(t){
   requestAnimationFrame(loop);
   const dt = Math.min(50, t - lastT); lastT = t;
   track(t);
-  if (t - lastFace > 600) target = rest ? {...rest} : {...DEFAULT_EYE};
+  if (!touchMode && t - lastFace > 600) target = rest ? {...rest} : {...DEFAULT_EYE};
   const k = 0.35; eye.x += (target.x-eye.x)*k; eye.y += (target.y-eye.y)*k; eye.z += (target.z-eye.z)*k;
   applyEye(eye);
   if (calib) stepCalibration(t);

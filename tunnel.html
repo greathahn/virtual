@@ -118,26 +118,26 @@ const renderer = new THREE.WebGLRenderer({canvas, antialias:true, powerPreferenc
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.outputEncoding = THREE.sRGBEncoding;
 const scene = new THREE.Scene(); scene.background = new THREE.Color(0x05060a);
-scene.fog = new THREE.Fog(0x05060a, 1, 10);
+scene.fog = new THREE.Fog(0x05060a, 2.5, 9);
 const camera = new THREE.PerspectiveCamera();
 const world = new THREE.Group(); scene.add(world);   // everything in tunnel space; moves toward the viewer
-scene.add(new THREE.AmbientLight(0x6677aa, .5));
-const key = new THREE.PointLight(0xffffff, 1.0, 0, 2); key.position.set(0, 0.3, 0.2); scene.add(key);
+scene.add(new THREE.AmbientLight(0x6677aa, .35));
+const key = new THREE.PointLight(0xffffff, 1.6, 6, 2); key.position.set(0, 0.3, 0.2); scene.add(key);
 const shipLight = new THREE.PointLight(0x3de0ff, 1.2, 2, 2); scene.add(shipLight);
 
 // tunnel geometry (units: screen widths). Tunnel cross-section = W × H of screen, from z=0 (screen) to z=-LEN
 let LEN = 10, TW = 1, TH = 1, SEG = 0.5;
-let rings = [], gates = [], ship = null, frame = null;
-const gateMat = new THREE.MeshStandardMaterial({color:0x1b2432, roughness:.7, metalness:.3, emissive:0x0a0f18});
+let rings = [], gates = [], ship = null, frame = null, reticle = null;
+const gateMat = new THREE.MeshStandardMaterial({color:0x5a6f8e, roughness:.55, metalness:.35, emissive:0x1a2438, emissiveIntensity:.6});
 const gateEdge = new THREE.MeshStandardMaterial({color:0xff5c8a, emissive:0xff5c8a, emissiveIntensity:.8, roughness:.4});
-const ringMat = new THREE.LineBasicMaterial({color:0x2f6b80, transparent:true, opacity:.9});
+const ringMat = new THREE.LineBasicMaterial({color:0x3de0ff, transparent:true, opacity:.55});
 
 function buildTunnel(){
   while (world.children.length) world.remove(world.children[0]);
   rings = []; gates = [];
   TW = 1; TH = screenH/screenW; SEG = 0.45;
   // wall planes
-  const wm = new THREE.MeshStandardMaterial({color:0x0b0f16, roughness:.95});
+  const wm = new THREE.MeshLambertMaterial({color:0x0e1420});
   const mk = (w,h,x,y,z,rx,ry) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(w,h), wm); m.position.set(x,y,z); m.rotation.set(rx,ry,0); world.add(m); };
   mk(LEN, TH, -TW/2, 0, -LEN/2, 0,  Math.PI/2);
   mk(LEN, TH,  TW/2, 0, -LEN/2, 0, -Math.PI/2);
@@ -148,10 +148,13 @@ function buildTunnel(){
     new THREE.Vector3(-TW/2,-TH/2,0), new THREE.Vector3(TW/2,-TH/2,0), new THREE.Vector3(TW/2,TH/2,0), new THREE.Vector3(-TW/2,TH/2,0), new THREE.Vector3(-TW/2,-TH/2,0)]);
   for (let z = 0; z > -LEN; z -= SEG){ const r = new THREE.Line(rg, ringMat); r.position.z = z; world.add(r); rings.push(r); }
   // ship: small arrowhead that sits a bit behind the screen plane
-  const sg = new THREE.ConeGeometry(TW*0.035, TW*0.12, 4);
+  const sg = new THREE.ConeGeometry(TW*0.055, TW*0.17, 4);
   sg.rotateX(-Math.PI/2);
   ship = new THREE.Mesh(sg, new THREE.MeshStandardMaterial({color:0x3de0ff, emissive:0x3de0ff, emissiveIntensity:.9, flatShading:true}));
   scene.add(ship);
+  if (reticle) scene.remove(reticle);
+  reticle = new THREE.Mesh(new THREE.RingGeometry(TW*0.045, TW*0.06, 32), new THREE.MeshBasicMaterial({color:0x3de0ff, transparent:true, opacity:.75, side:THREE.DoubleSide, depthTest:false}));
+  reticle.renderOrder = 5; scene.add(reticle);
   // screen-plane frame
   if (frame) scene.remove(frame);
   frame = new THREE.Group();
@@ -180,12 +183,16 @@ function makeGate(z){
   const e = TW*0.012;
   const edge = (w,h,x,y) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d*1.1), gateEdge); m.position.set(x,y,0); g.add(m); };
   edge(hw+e*2, e, hx, hy+hh/2+e/2); edge(hw+e*2, e, hx, hy-hh/2-e/2); edge(e, hh, hx-hw/2-e/2, hy); edge(e, hh, hx+hw/2+e/2, hy);
+  // dark bevel ring just outside the glowing edge, so the solid wall reads against the hole
+  const b = TW*0.03, bm = new THREE.MeshStandardMaterial({color:0x121a26, roughness:.9});
+  const bev = (w,h,x,y) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d*1.05), bm); m.position.set(x,y,0); g.add(m); };
+  bev(hw+e*2+b*2, b, hx, hy+hh/2+e+b/2); bev(hw+e*2+b*2, b, hx, hy-hh/2-e-b/2); bev(b, hh+e*2, hx-hw/2-e-b/2, hy); bev(b, hh+e*2, hx+hw/2+e+b/2, hy);
   g.userData = {hx, hy, hw, hh, passed:false};
   world.add(g); gates.push(g);
 }
 function resetGates(){
   for (const g of gates) world.remove(g); gates = [];
-  for (let z = -3.5; z > -LEN; z -= 2.2) makeGate(z);
+  for (let z = -5; z > -LEN; z -= 3.0) makeGate(z);
 }
 
 // ---------- reach → ship mapping ----------
@@ -363,7 +370,7 @@ function loop(t){
   requestAnimationFrame(loop);
   const dt = Math.min(50, t - lastT)/1000; lastT = t;
   track(t);
-  if (t - lastFace > 600) target = rest ? {...rest} : {...DEFAULT_EYE};
+  if (!touchMode && t - lastFace > 600) target = rest ? {...rest} : {...DEFAULT_EYE};
   const k = 0.4; eye.x += (target.x-eye.x)*k; eye.y += (target.y-eye.y)*k; eye.z += (target.z-eye.z)*k;
   applyEye(eye);
   if (calib) stepCalibration(t);
@@ -372,11 +379,13 @@ function loop(t){
   const sp = shipFromEye();
   if (ship){ ship.position.x += (sp.x - ship.position.x)*.45; ship.position.y += (sp.y - ship.position.y)*.45; ship.position.z = SHIP_Z;
     ship.rotation.z = -(sp.x - ship.position.x)*6; ship.rotation.x = (sp.y - ship.position.y)*6;
-    shipLight.position.copy(ship.position); shipLight.position.z += .1; }
+    shipLight.position.copy(ship.position); shipLight.position.z += .1;
+    const ng = gates.filter(g => !g.userData.passed && g.position.z < SHIP_Z).sort((a,b) => b.position.z - a.position.z)[0];
+    if (reticle){ reticle.visible = !!ng && running; if (ng) reticle.position.set(ship.position.x, ship.position.y, ng.position.z + TW*0.04); } }
 
   if (running){
-    speed = Math.min(4, 1 + dist*0.012);
-    const v = 2.4 * speed * dt;            // tunnel scroll per frame (screen widths)
+    speed = Math.min(4, 1 + dist*0.01);
+    const v = 2.0 * speed * dt;            // tunnel scroll per frame (screen widths)
     dist += v;
     for (const r of rings){ r.position.z += v; if (r.position.z > 0) r.position.z -= LEN; }
     for (const g of gates){
