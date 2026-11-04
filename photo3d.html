@@ -64,9 +64,14 @@
       <input id="hftok" type="password" placeholder="hf_..." style="font:13px var(--mono);padding:9px;border-radius:8px;border:1px solid #2a3140;background:#111;color:var(--fg)"></label>
     <label style="display:grid;gap:4px;font-size:12px;color:var(--dim)">모델
       <select id="hfmodel" style="font:13px system-ui;padding:9px;border-radius:8px;border:1px solid #2a3140;background:#111;color:var(--fg)">
-        <option value="triposr">TripoSR (빠름, 10~30초)</option>
-        <option value="hunyuan">Hunyuan3D-2 (느림, 품질↑)</option>
+        <option value="tencent/Hunyuan3D-2">tencent/Hunyuan3D-2 (형상만, ~1분)</option>
+        <option value="tencent/Hunyuan3D-2|tex">tencent/Hunyuan3D-2 (형상+텍스처, ~2분)</option>
+        <option value="tencent/Hunyuan3D-2mini-Turbo">tencent/Hunyuan3D-2mini-Turbo (빠름)</option>
+        <option value="stabilityai/TripoSR">stabilityai/TripoSR (현재 Runtime error)</option>
+        <option value="custom">직접 입력…</option>
       </select></label>
+    <label id="customwrap" style="display:none;gap:4px;font-size:12px;color:var(--dim)">스페이스 ID
+      <input id="hfcustom" placeholder="user/space" style="font:13px var(--mono);padding:9px;border-radius:8px;border:1px solid #2a3140;background:#111;color:var(--fg)"></label>
   </div>
   <div class="btns" style="margin-top:14px"><button id="genrun">생성</button><button class="alt" id="genapi">API 보기</button><button class="alt" id="gencancel">닫기</button></div>
   <div id="genlog" style="font:11px var(--mono);color:var(--dim);margin-top:12px;text-align:left;max-height:30vh;overflow:auto;white-space:pre-wrap"></div>
@@ -265,7 +270,10 @@ async function space(id, tok){
   const hostv = (await hr.json()).host; const base = /^https?:\/\//.test(hostv) ? hostv.replace(/\/$/,'') : 'https://' + hostv;
   let sign = '';
   if (tok){ try{ const jr = await fetch(`https://huggingface.co/api/spaces/${id}/jwt`, {headers:hh}); if (jr.ok) sign = '?__sign=' + encodeURIComponent((await jr.json()).token); }catch(e){} }
-  let cfg; try { cfg = await (await fetch(`${base}/config${sign}`)).json(); } catch(e){ throw new Error('config 요청 실패 ' + base + ' (' + e.message + ')'); }
+  let cfg; { const cr = await fetch(`${base}/config${sign}`).catch(e => { throw new Error('config 접속 실패 ' + base + ' (' + e.message + ')'); });
+    const ct = cr.headers.get('content-type') || '';
+    if (!cr.ok || !ct.includes('json')) throw new Error(`스페이스가 실행 중이 아님 (HTTP ${cr.status}, ${ct.split(';')[0]}) — Runtime error/Sleeping 상태일 수 있음. 다른 스페이스를 고르세요`);
+    cfg = await cr.json(); }
   const prefix = (cfg.version || '5').split('.')[0] >= 5 ? '/gradio_api' : '';
   log(`gradio ${cfg.version} · ${base.replace('https://','')}`);
   const upload = async (blob, name='image.png') => {
@@ -293,31 +301,50 @@ async function space(id, tok){
   return {upload, call, fileUrl, info};
 }
 const findGlb = (out) => { const all = []; (function walk(x){ if (!x) return; if (Array.isArray(x)) x.forEach(walk); else if (typeof x === 'object'){ if (x.path || x.url) all.push(x); else Object.values(x).forEach(walk); } })(out);
-  return all.filter(f => /\.glb$/i.test(f.path || f.url || f.orig_name || '')).pop() || null; };
+  const g = all.filter(f => /\.glb$/i.test(f.path || f.url || f.orig_name || '')); return g.find(f => /textured/i.test(f.path||'')) || g.pop() || null; };
+function chosenSpace(){ const v = $('hfmodel').value; if (v === 'custom') return {id: $('hfcustom').value.trim(), tex:false}; const [id, flag] = v.split('|'); return {id, tex: flag === 'tex'}; }
+// fill a Space endpoint's positional args by parameter name
+function argsFor(ep, img, opts){
+  const params = ep.parameters || [];
+  return params.map(p => {
+    const n = (p.parameter_name || p.label || '').toLowerCase();
+    if (n === 'image' || n === 'input_image') return img;
+    if (n === 'caption' || n === 'prompt') return '';
+    if (/rembg|remove_background/.test(n)) return true;
+    if (n === 'steps' || n === 'num_inference_steps') return Math.min(30, p.parameter_default ?? 30);
+    if (n === 'octree_resolution') return 256;
+    if (n === 'mc_resolution') return 256;
+    if (n === 'foreground_ratio') return 0.85;
+    if (n === 'randomize_seed') return false;
+    if (/^mv_image/.test(n)) return null;
+    return p.parameter_has_default ? p.parameter_default : (p.parameter_default ?? null);
+  });
+}
 async function generate3D(){
   const tok = $('hftok').value.trim(); try { localStorage.setItem('hf_token', tok); } catch(e){}
   if (!lastImageEl){ log('사진이 없습니다'); return; }
   $('genrun').disabled = true; $('genlog').textContent = '';
   try{
-    const blob = await imageBlob(lastImageEl), which = $('hfmodel').value;
-    let glbUrl = null;
-    if (which === 'triposr'){
-      log('연결: stabilityai/TripoSR'); const sp = await space('stabilityai/TripoSR', tok);
-      log('업로드…'); const img = await sp.upload(blob);
-      log('배경 제거…'); const pre = await sp.call('preprocess', [img, true, 0.85]);
-      log('메시 생성…'); const gen = await sp.call('generate', [pre[0], 256, ['obj','glb']]);
-      glbUrl = sp.fileUrl(findGlb(gen));
-      if (!glbUrl) throw new Error('glb 없음: ' + JSON.stringify(gen).slice(0, 300));
+    const {id, tex} = chosenSpace(); if (!id) throw new Error('스페이스 ID가 비어 있음');
+    const blob = await imageBlob(lastImageEl);
+    log('연결: ' + id); const sp = await space(id, tok);
+    const api = await sp.info(), eps = api.named_endpoints || {};
+    log('엔드포인트: ' + Object.keys(eps).join(' '));
+    log('업로드…'); const img = await sp.upload(blob);
+    let out;
+    if (eps['/generate'] && eps['/preprocess']){                       // TripoSR-style
+      log('배경 제거…'); const pre = await sp.call('preprocess', argsFor(eps['/preprocess'], img));
+      log('메시 생성…'); out = await sp.call('generate', argsFor(eps['/generate'], pre[0]));
     } else {
-      log('연결: tencent/Hunyuan3D-2'); const sp = await space('tencent/Hunyuan3D-2', tok);
-      log('업로드…'); const img = await sp.upload(blob);
-      log('형상+텍스처 생성… (1~2분)');
-      const gen = await sp.call('generation_all', ['', img, null, null, null, null, 30, 5.5, 1234, 256, true, 8000, false]);
-      glbUrl = sp.fileUrl(findGlb(gen));
-      if (!glbUrl) throw new Error('glb 없음: ' + JSON.stringify(gen).slice(0, 300));
+      const name = (tex && eps['/generation_all']) ? '/generation_all' : (eps['/shape_generation'] ? '/shape_generation' : (eps['/generation_all'] ? '/generation_all' : null));
+      if (!name) throw new Error('아는 엔드포인트가 없음. API 보기로 확인 필요');
+      const args = argsFor(eps[name], img);
+      log(name + ' 호출… (GPU 대기열 포함 1~3분)\n인자: ' + JSON.stringify(args.map(a => a && a.path ? '<image>' : a)));
+      out = await sp.call(name.slice(1), args);
     }
-    log('다운로드…');
-    await showModel(glbUrl);
+    const glb = findGlb(out); const glbUrl = sp.fileUrl(glb);
+    if (!glbUrl) throw new Error('glb 없음: ' + JSON.stringify(out).slice(0, 300));
+    log('다운로드…'); await showModel(glbUrl);
     log('완료'); $('genov').hidden = true;
   }catch(e){ log('오류: ' + (e && e.message ? e.message : JSON.stringify(e))); }
   $('genrun').disabled = false;
@@ -340,12 +367,12 @@ function showModel(url){
 }
 async function showApi(){
   const tok = $('hftok').value.trim(); $('genlog').textContent = '';
-  try{ const id = $('hfmodel').value === 'triposr' ? 'stabilityai/TripoSR' : 'tencent/Hunyuan3D-2';
-    const sp = await space(id, tok); const api = await sp.info();
+  try{ const {id} = chosenSpace(); const sp = await space(id, tok); const api = await sp.info();
     for (const [k, v] of Object.entries(api.named_endpoints || {})) log(k + ' ← ' + (v.parameters || []).map(p => p.parameter_name || p.label).join(', '));
   }catch(e){ log('오류: ' + (e && e.message ? e.message : e)); }
 }
 $('gen3d').onclick = () => { $('genov').hidden = false; try { $('hftok').value = localStorage.getItem('hf_token') || ''; } catch(e){} };
+$('hfmodel').onchange = e => { $('customwrap').style.display = e.target.value === 'custom' ? 'grid' : 'none'; };
 $('genrun').onclick = generate3D; $('genapi').onclick = showApi; $('gencancel').onclick = () => { $('genov').hidden = true; };
 
 // ---------- UI ----------
