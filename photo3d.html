@@ -364,7 +364,11 @@ async function showModel(url){
   const W = screenW, H = screenH, sc = Math.min(W, H) * 0.75 / Math.max(size.x, size.y, size.z);
   model3d.position.sub(ctr).multiplyScalar(sc); model3d.scale.setScalar(sc);
   // untextured meshes come in plain white; give them a readable material
-  model3d.traverse(o => { if (o.isMesh && (!o.material.map)) { o.material = new THREE.MeshStandardMaterial({color:0xd9d3c7, roughness:.65, metalness:.05}); } });
+  model3d.traverse(o => { if (!o.isMesh) return;
+    if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals();
+    const tex = o.material && o.material.map;
+    o.material = new THREE.MeshStandardMaterial({ map: tex || null, color: tex ? 0xffffff : 0xd9d3c7, roughness:.7, metalness:.02, side: THREE.DoubleSide });
+    if (tex) tex.encoding = THREE.sRGBEncoding; });
   const holder = new THREE.Group(); holder.add(model3d); holder.position.z = -W * 0.55; model3d = holder;
   scene.add(model3d);
   if (!scene.getObjectByName('mlight')){ const l = new THREE.DirectionalLight(0xffffff, 1.2); l.name = 'mlight'; l.position.set(1, 2, 3); scene.add(l); const l2 = new THREE.DirectionalLight(0x8899ff, .5); l2.position.set(-2, -1, 1); scene.add(l2); scene.add(new THREE.AmbientLight(0xffffff, .6)); }
