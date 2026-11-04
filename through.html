@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>THROUGH</title>
+<style>
+  :root{ --bg:#000; --fg:#eef1f6; --dim:#9aa4b4; --accent:#7cf2c4; --panel:rgba(0,0,0,.55); --mono:ui-monospace,"SF Mono",Menlo,monospace; }
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);overflow:hidden;
+    font:14px/1.45 system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;-webkit-user-select:none;user-select:none;touch-action:none}
+  #cam{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
+  #c{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #hud{position:fixed;top:0;left:0;right:0;padding:calc(10px + env(safe-area-inset-top,0px)) max(14px,env(safe-area-inset-right,0px)) 0 max(14px,env(safe-area-inset-left,0px));
+    display:flex;justify-content:space-between;pointer-events:none;font:11px var(--mono);color:var(--dim);text-shadow:0 1px 4px #000}
+  .ctl{position:fixed;bottom:0;right:0;padding:0 max(12px,env(safe-area-inset-right,0px)) calc(10px + env(safe-area-inset-bottom,0px)) 0;
+    display:flex;flex-direction:column;gap:6px;align-items:flex-end;font-size:12px}
+  .ctl label,.ctl button.sm{display:flex;gap:8px;align-items:center;background:var(--panel);padding:7px 11px;border-radius:8px;backdrop-filter:blur(6px);color:var(--fg)}
+  input[type=range]{width:96px;accent-color:var(--accent)}
+  button{font:inherit;font-weight:700;padding:13px 24px;border-radius:999px;border:0;background:var(--accent);color:#06281c}
+  button.sm{font-weight:600;padding:8px 14px;background:var(--panel);color:var(--fg);border:1px solid #2a3140;pointer-events:auto}
+  button:focus-visible{outline:2px solid #fff;outline-offset:2px}
+  .ov{position:fixed;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.88);
+    padding:0 max(16px,env(safe-area-inset-left,0px)) 0 max(16px,env(safe-area-inset-right,0px))}
+  .ov[hidden]{display:none}
+  .ov > div{max-width:320px;text-align:center}
+  .ov h1{font-size:30px;margin:0 0 6px;letter-spacing:.14em}
+  .ov p{color:var(--dim);margin:0 0 18px}
+  #msg{color:var(--dim);font:12px var(--mono);margin-top:14px}
+  #err{color:#ff8a80;font:12px var(--mono);margin-top:8px;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<video id="cam" playsinline muted autoplay></video>
+<canvas id="c"></canvas>
+<div id="hud"><span id="st">idle</span><span id="rot"></span></div>
+<div class="ctl">
+  <button class="sm" id="anchor">구멍 다시 놓기</button>
+  <label>구멍 크기 <input id="size" type="range" min="20" max="80" value="45"></label>
+  <label>거리 <input id="dist" type="range" min="40" max="250" value="110"></label>
+</div>
+<div class="ov" id="start"><div>
+  <h1>THROUGH</h1>
+  <p>후면 카메라로 앞을 비추면 벽이나 책상에 구멍이 뚫리고, 그 안에 방이 있습니다.<br>폰을 돌리면 구멍은 그 자리에 고정된 채로 보입니다.</p>
+  <button id="go">시작</button>
+  <div id="msg"></div><div id="err"></div>
+</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script type="module">
+const $ = id => document.getElementById(id);
+const cam = $('cam'), canvas = $('c'), st = $('st');
+
+// ---------- three ----------
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true, stencil:true, powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setClearColor(0x000000, 0);
+renderer.outputEncoding = THREE.sRGBEncoding;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.05, 50);   // ~rear wide camera vertical FOV in portrait
+scene.add(new THREE.AmbientLight(0x6677aa, .22));
+const key = new THREE.PointLight(0xfff4e0, 1.1, 2.5, 2); scene.add(key);
+const fill = new THREE.PointLight(0x7cf2c4, .8, 2.5, 2); scene.add(fill);
+
+// portal: a hole in the world. Everything "inside" is stencil-masked to the hole quad.
+const portal = new THREE.Group(); scene.add(portal);
+let hole = null, frame = null, inside = null;
+let holeW = 0.45, holeH = 0.6, portalDist = 1.1;
+
+function buildPortal(){
+  while (portal.children.length) portal.remove(portal.children[0]);
+  const W = holeW, H = holeH, D = Math.max(W, H) * 2.2;
+  // 1) hole mask: writes stencil=1, no color
+  hole = new THREE.Mesh(new THREE.PlaneGeometry(W, H), new THREE.MeshBasicMaterial({colorWrite:false, depthWrite:false}));
+  hole.material.stencilWrite = true; hole.material.stencilRef = 1; hole.material.stencilFunc = THREE.AlwaysStencilFunc;
+  hole.material.stencilZPass = THREE.ReplaceStencilOp; hole.renderOrder = 0; portal.add(hole);
+  // 2) inside: only drawn where stencil==1
+  inside = new THREE.Group(); inside.renderOrder = 1; portal.add(inside);
+  const mat = (color, extra={}) => { const m = new THREE.MeshLambertMaterial({color, ...extra}); m.stencilWrite = true; m.stencilRef = 1; m.stencilFunc = THREE.EqualStencilFunc; return m; };
+  const stdmat = (opts) => { const m = new THREE.MeshStandardMaterial(opts); m.stencilWrite = true; m.stencilRef = 1; m.stencilFunc = THREE.EqualStencilFunc; return m; };
+  const wall = (w, h, pos, rot, color) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat(color)); m.position.copy(pos); m.rotation.set(rot.x, rot.y, rot.z); m.renderOrder = 1; inside.add(m); };
+  const V = (x,y,z) => new THREE.Vector3(x,y,z), R = (x,y,z) => ({x,y,z});
+  wall(W, H, V(0,0,-D), R(0,0,0), 0x0e141f);
+  wall(D, H, V(-W/2,0,-D/2), R(0, Math.PI/2,0), 0x0b1019);
+  wall(D, H, V( W/2,0,-D/2), R(0,-Math.PI/2,0), 0x0b1019);
+  wall(W, D, V(0,-H/2,-D/2), R(-Math.PI/2,0,0), 0x090d14);
+  wall(W, D, V(0, H/2,-D/2), R( Math.PI/2,0,0), 0x090d14);
+  // grid lines on the walls so depth reads
+  const gm = new THREE.LineBasicMaterial({color:0x7cf2c4, transparent:true, opacity:.35}); gm.stencilWrite = true; gm.stencilRef = 1; gm.stencilFunc = THREE.EqualStencilFunc;
+  const pts = [], n = 8;
+  for (let i=0;i<=n;i++){ const z = -D*i/n; pts.push(-W/2,-H/2,z, W/2,-H/2,z, W/2,-H/2,z, W/2,H/2,z, W/2,H/2,z, -W/2,H/2,z, -W/2,H/2,z, -W/2,-H/2,z); }
+  const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.Float32BufferAttribute(pts,3));
+  const lines = new THREE.LineSegments(lg, gm); lines.renderOrder = 1; inside.add(lines);
+  // objects
+  const add = (geo, m, x, y, z, spin) => { const o = new THREE.Mesh(geo, m); o.position.set(x,y,z); o.userData.spin = spin; o.renderOrder = 1; inside.add(o); };
+  add(new THREE.SphereGeometry(W*0.14, 48, 32), stdmat({color:0xff7a3d, emissive:0x3a1200, roughness:.35}), W*0.22, -H*0.15, -D*0.3, 0);
+  add(new THREE.IcosahedronGeometry(W*0.16, 0), stdmat({color:0xd84fff, emissive:0x2a0a3a, flatShading:true, roughness:.4}), -W*0.22, H*0.15, -D*0.55, 1);
+  add(new THREE.TorusKnotGeometry(W*0.18, W*0.05, 160, 20), stdmat({color:0x7cf2c4, emissive:0x0a2a20, roughness:.3, metalness:.4}), 0, 0, -D*0.85, 2);
+  const pm = mat(0x202a3a);
+  for (let i=0;i<4;i++){ const h = H*0.4, p = new THREE.Mesh(new THREE.BoxGeometry(W*0.07, h, W*0.07), pm); p.position.set((i%2?1:-1)*W*0.36, -H/2 + h/2, -D*(0.2 + i*0.2)); p.renderOrder = 1; inside.add(p); }
+  key.position.set(W*0.1, H*0.4, -D*0.2); fill.position.set(-W*0.3, -H*0.3, -D*0.9);
+  // 3) frame: drawn normally, sits on the wall surface around the hole
+  frame = new THREE.Group(); portal.add(frame);
+  const fm = new THREE.MeshStandardMaterial({color:0x2a3444, roughness:.5, metalness:.4}), t = Math.max(W,H)*0.035;
+  const fb = (w,h,x,y) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,t), fm); m.position.set(x,y,t/2); m.renderOrder = 2; frame.add(m); };
+  fb(W+2*t, t, 0, H/2+t/2); fb(W+2*t, t, 0, -H/2-t/2); fb(t, H, -W/2-t/2, 0); fb(t, H, W/2+t/2, 0);
+  const glow = new THREE.Mesh(new THREE.PlaneGeometry(W+2*t+0.02, H+2*t+0.02), new THREE.MeshBasicMaterial({color:0x7cf2c4, transparent:true, opacity:.25}));
+  glow.position.z = -0.002; glow.renderOrder = -1; frame.add(glow);
+  // light positions are world-space; move them with the portal each frame
+  portal.userData.lights = [[key, key.position.clone()], [fill, fill.position.clone()]];
+}
+buildPortal();
+
+function resize(){ renderer.setSize(innerWidth, innerHeight, false); camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+
+// ---------- orientation → camera quaternion (device-orientation controls math) ----------
+const zee = new THREE.Vector3(0,0,1), euler = new THREE.Euler(), q0 = new THREE.Quaternion(), q1 = new THREE.Quaternion(-Math.sqrt(.5), 0, 0, Math.sqrt(.5));
+let orient = {alpha:null, beta:null, gamma:null}, haveGyro = false;
+function screenAngle(){ const a = (screen.orientation && screen.orientation.angle) ?? window.orientation ?? 0; return THREE.MathUtils.degToRad(a); }
+function updateCameraFromGyro(){
+  if (orient.alpha === null) return false;
+  const a = THREE.MathUtils.degToRad(orient.alpha), b = THREE.MathUtils.degToRad(orient.beta), g = THREE.MathUtils.degToRad(orient.gamma);
+  euler.set(b, a, -g, 'YXZ'); camera.quaternion.setFromEuler(euler); camera.quaternion.multiply(q1); camera.quaternion.multiply(q0.setFromAxisAngle(zee, -screenAngle()));
+  return true;
+}
+addEventListener('deviceorientation', e => { if (e.alpha === null) return; orient = {alpha:e.alpha, beta:e.beta, gamma:e.gamma}; haveGyro = true; });
+
+// touch fallback: drag to look around
+let drag = null, yaw = 0, pitch = 0;
+addEventListener('pointerdown', e => { if (!haveGyro && !e.target.closest('.ctl,.ov')) drag = {x:e.clientX, y:e.clientY, yaw, pitch}; });
+addEventListener('pointermove', e => { if (drag){ yaw = drag.yaw - (e.clientX-drag.x)*0.004; pitch = Math.max(-1.3, Math.min(1.3, drag.pitch - (e.clientY-drag.y)*0.004)); } });
+addEventListener('pointerup', () => drag = null);
+
+// ---------- anchoring ----------
+let anchored = false;
+function placePortal(){
+  // put the hole straight ahead of the current view, facing the camera, world-fixed from then on
+  const dir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+  portal.position.copy(camera.position).add(dir.multiplyScalar(portalDist));
+  portal.quaternion.copy(camera.quaternion);
+  anchored = true;
+}
+$('anchor').onclick = placePortal;
+$('size').oninput = e => { const s = e.target.value/100; holeW = s; holeH = s*1.33; buildPortal(); };
+$('dist').oninput = e => { portalDist = e.target.value/100; placePortal(); };
+
+// ---------- start ----------
+async function start(){
+  const err = $('err'), msg = $('msg'); err.textContent = '';
+  const say = t => { msg.textContent = t; st.textContent = t; };
+  try{
+    $('go').disabled = true;
+    // iOS: motion permission must be requested inside the tap
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'){
+      say('자이로 권한…');
+      try { const r = await DeviceOrientationEvent.requestPermission(); if (r !== 'granted') say('자이로 거부됨 — 드래그로 둘러보기'); }
+      catch(e){ say('자이로 없음 — 드래그로 둘러보기'); }
+    }
+    say('후면 카메라 여는 중…');
+    if (!isSecureContext || !navigator.mediaDevices?.getUserMedia) throw new Error('카메라는 https 주소에서만 열립니다.');
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}}, audio:false});
+    cam.srcObject = stream; await cam.play();
+    $('start').hidden = true; st.textContent = haveGyro ? 'gyro' : 'drag';
+    setTimeout(placePortal, 400);   // let a few orientation events land first
+  }catch(e){ $('go').disabled = false; say('idle'); err.textContent = (e && e.message) ? e.message : String(e); }
+}
+$('go').onclick = start;
+
+// ---------- loop ----------
+function loop(t){
+  requestAnimationFrame(loop);
+  if (!updateCameraFromGyro()){ euler.set(pitch, yaw, 0, 'YXZ'); camera.quaternion.setFromEuler(euler); }
+  if (!anchored && !$('start').hidden) placePortal();
+  for (const [l, local] of portal.userData.lights) l.position.copy(local).applyMatrix4(portal.matrixWorld);
+  portal.updateMatrixWorld();
+  if (inside) inside.children.forEach((m,i) => { if (m.userData.spin !== undefined){ const s = 0.004*(1+m.userData.spin*0.3); m.rotation.y += s*4; m.rotation.x += s*2; } });
+  renderer.render(scene, camera);
+  if (orient.alpha !== null) $('rot').textContent = `α ${orient.alpha.toFixed(0)} β ${orient.beta.toFixed(0)} γ ${orient.gamma.toFixed(0)}`;
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
