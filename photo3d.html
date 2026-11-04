@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>PHOTO WINDOW</title>
+<style>
+  :root{ --bg:#0a0a0c; --fg:#eef1f6; --dim:#9aa4b4; --accent:#f3c969; --panel:rgba(10,10,12,.62); --mono:ui-monospace,"SF Mono",Menlo,monospace; }
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);overflow:hidden;
+    font:14px/1.45 system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;-webkit-user-select:none;user-select:none;touch-action:none}
+  #c{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #v{position:fixed;left:max(10px,env(safe-area-inset-left,0px));bottom:max(10px,env(safe-area-inset-bottom,0px));
+    width:64px;height:86px;object-fit:cover;border:1px solid #223;border-radius:8px;opacity:.7;transform:scaleX(-1);display:none}
+  #hud{position:fixed;top:0;left:0;right:0;padding:calc(10px + env(safe-area-inset-top,0px)) max(14px,env(safe-area-inset-right,0px)) 0 max(14px,env(safe-area-inset-left,0px));
+    display:flex;justify-content:space-between;gap:10px;pointer-events:none;font:11px var(--mono);color:var(--dim);text-shadow:0 1px 4px #000}
+  .ctl{position:fixed;bottom:0;right:0;padding:0 max(12px,env(safe-area-inset-right,0px)) calc(10px + env(safe-area-inset-bottom,0px)) 0;
+    display:flex;flex-direction:column;gap:6px;align-items:flex-end;font-size:12px}
+  .ctl label,.ctl .row{display:flex;gap:8px;align-items:center;background:var(--panel);padding:7px 11px;border-radius:8px;backdrop-filter:blur(6px);color:var(--fg)}
+  .ctl .row{gap:6px;padding:4px}
+  .ctl b{font:11px var(--mono);min-width:3ch;text-align:right}
+  input[type=range]{width:96px;accent-color:var(--accent)}
+  input[type=checkbox]{accent-color:var(--accent)}
+  button{font:inherit;font-weight:700;padding:13px 24px;border-radius:999px;border:0;background:var(--accent);color:#2a1d00}
+  button.sm{font-weight:600;font-size:12px;padding:7px 12px;border-radius:7px;background:transparent;color:var(--fg);border:1px solid #2a3140}
+  button.sm.on{background:var(--accent);color:#2a1d00;border-color:var(--accent)}
+  button:focus-visible{outline:2px solid #fff;outline-offset:2px}
+  .ov{position:fixed;inset:0;display:grid;place-items:center;background:rgba(10,10,12,.9);
+    padding:0 max(16px,env(safe-area-inset-left,0px)) 0 max(16px,env(safe-area-inset-right,0px))}
+  .ov[hidden]{display:none}
+  .ov > div{max-width:320px;text-align:center}
+  .ov h1{font-size:26px;margin:0 0 6px;letter-spacing:.1em}
+  .ov p{color:var(--dim);margin:0 0 18px}
+  #msg{color:var(--dim);font:12px var(--mono);margin-top:14px;min-height:1.4em}
+  #err{color:#ff8a80;font:12px var(--mono);margin-top:8px;white-space:pre-wrap}
+  #bar{height:4px;background:#222;border-radius:2px;margin-top:10px;overflow:hidden}
+  #bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+  #file{display:none}
+  .btns{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+  button.alt{background:#1e222b;color:var(--fg)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<video id="v" playsinline muted autoplay></video>
+<div id="hud"><span id="st">idle</span><span id="pos"></span></div>
+
+<div class="ctl">
+  <div class="row">
+    <button class="sm on" id="mFace">얼굴</button><button class="sm" id="mGyro">자이로</button><button class="sm" id="mTouch">터치</button>
+  </div>
+  <label>깊이 <input id="depth" type="range" min="0" max="100" value="55"><b id="depthv">55</b></label>
+  <label>돌출 <input id="pop" type="range" min="0" max="100" value="25"><b id="popv">25</b></label>
+  <label><input id="cut" type="checkbox"> 경계 끊기</label>
+  <label>화면 폭 <input id="sw" type="range" min="50" max="400" value="68"><b id="swv">68</b>mm</label>
+  <label style="cursor:pointer">📷 다른 사진 <input id="file" type="file" accept="image/*"></label>
+</div>
+
+<div class="ov" id="start"><div>
+  <h1>PHOTO WINDOW</h1>
+  <p>사진 한 장의 깊이를 기기에서 추정해서 창문 안에 입체로 세웁니다.<br>첫 실행은 모델(약 25MB)을 받습니다.</p>
+  <div class="btns"><button id="go">샘플 사진으로 시작</button><button class="alt" id="pick">내 사진 선택</button></div>
+  <div id="bar"><i></i></div>
+  <div id="msg"></div><div id="err"></div>
+</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script type="module">
+const $ = id => document.getElementById(id);
+const canvas = $('c'), video = $('v'), st = $('st');
+const IPD_MM = 63, CAM_ABOVE_MM = 8, FOCAL_FACTOR = 0.8, DEFAULT_EYE = {x:0, y:0, z:380};
+let screenW = 68, screenH = 68 * innerHeight / innerWidth;
+let eye = {...DEFAULT_EYE}, target = {...DEFAULT_EYE}, lastFace = 0, mode = 'face';
+let depthScale = 0.55, pop = 0.25, cutEdges = false;
+
+// ---------- three ----------
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true, powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.outputEncoding = THREE.sRGBEncoding;
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0a0a0c);
+const camera = new THREE.PerspectiveCamera();
+const room = new THREE.Group(); scene.add(room);
+let photo = null, photoTex = null, depthTex = null, photoAspect = 3/4;
+
+const vert = `
+  uniform sampler2D depthMap; uniform float depthScale; uniform float pop;
+  varying vec2 vUv; varying float vDepth;
+  void main(){
+    vUv = uv;
+    float d = texture2D(depthMap, uv).r;        // 1 = near, 0 = far
+    vDepth = d;
+    vec3 p = position;
+    p.z = -(1.0 - d) * depthScale + d * pop;     // far recedes behind the window, near pops a little in front
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+  }`;
+const frag = `
+  uniform sampler2D map; uniform float cut;
+  varying vec2 vUv; varying float vDepth;
+  void main(){
+    if (cut > 0.5 && fwidth(vDepth) > 0.035) discard;   // drop stretched triangles at depth jumps
+    gl_FragColor = texture2D(map, vUv);
+  }`;
+const mat = new THREE.ShaderMaterial({ uniforms:{ map:{value:null}, depthMap:{value:null}, depthScale:{value:1}, pop:{value:0}, cut:{value:0} }, vertexShader:vert, fragmentShader:frag });
+mat.extensions = { derivatives:true };
+
+function buildRoom(){
+  while (room.children.length) room.remove(room.children[0]);
+  const W = screenW, H = screenH, D = W*1.6;
+  const wm = new THREE.MeshBasicMaterial({color:0x0e1016});
+  const mk = (w,h,x,y,z,rx,ry) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(w,h), wm); m.position.set(x,y,z); m.rotation.set(rx,ry,0); room.add(m); };
+  mk(D,H,-W/2,0,-D/2,0,Math.PI/2); mk(D,H,W/2,0,-D/2,0,-Math.PI/2); mk(W,D,0,-H/2,-D/2,-Math.PI/2,0); mk(W,D,0,H/2,-D/2,Math.PI/2,0); mk(W,H,0,0,-D,0,0);
+  const fm = new THREE.MeshBasicMaterial({color:0x1b1f28}), t = W*0.02;
+  const fb = (w,h,x,y)=>{ const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,t*2), fm); m.position.set(x,y,-t); room.add(m); };
+  fb(W,t,0,H/2-t/2); fb(W,t,0,-H/2+t/2); fb(t,H,-W/2+t/2,0); fb(t,H,W/2-t/2,0);
+}
+function buildPhoto(){
+  if (photo) scene.remove(photo);
+  if (!photoTex) return;
+  // cover the window with 18% overscan so parallax never reveals the photo's edge
+  const W = screenW, H = screenH, over = 1.3;
+  let pw = W*over, ph = pw/photoAspect; if (ph < H*over){ ph = H*over; pw = ph*photoAspect; }
+  const seg = 220, geo = new THREE.PlaneGeometry(pw, ph, seg, Math.round(seg/photoAspect));
+  photo = new THREE.Mesh(geo, mat); photo.position.z = -W*0.02; scene.add(photo);
+  updateUniforms();
+}
+function updateUniforms(){
+  const W = screenW;
+  mat.uniforms.map.value = photoTex; mat.uniforms.depthMap.value = depthTex;
+  mat.uniforms.depthScale.value = depthScale * W * 1.4; mat.uniforms.pop.value = pop * W * 0.25; mat.uniforms.cut.value = cutEdges ? 1 : 0;
+}
+function resize(){ renderer.setSize(innerWidth, innerHeight, false); screenH = screenW*innerHeight/innerWidth; buildRoom(); buildPhoto(); }
+addEventListener('resize', resize); resize();
+
+function applyEye(e){
+  const n = 10, f = 6000, s = n/e.z;
+  camera.projectionMatrix.makePerspective((-screenW/2-e.x)*s, (screenW/2-e.x)*s, (screenH/2-e.y)*s, (-screenH/2-e.y)*s, n, f);
+  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  camera.position.set(e.x,e.y,e.z); camera.rotation.set(0,0,0);
+}
+
+// ---------- depth estimation (on device) ----------
+let depthPipe = null;
+async function loadModel(say, progress){
+  if (depthPipe) return depthPipe;
+  say('모델 불러오는 중…');
+  const tf = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3');
+  const opts = { progress_callback: p => { if (p.status === 'progress' && p.total) progress(p.loaded/p.total); } };
+  try { depthPipe = await tf.pipeline('depth-estimation', 'onnx-community/depth-anything-v2-small', {...opts, device:'webgpu', dtype:'fp16'}); say('WebGPU'); }
+  catch(e){ say('WebGPU 불가 → CPU(wasm)…'); depthPipe = await tf.pipeline('depth-estimation', 'onnx-community/depth-anything-v2-small', {...opts, device:'wasm'}); }
+  return depthPipe;
+}
+function fitImage(img, max=640){
+  const s = Math.min(1, max/Math.max(img.width, img.height));
+  const c = document.createElement('canvas'); c.width = Math.round(img.width*s); c.height = Math.round(img.height*s);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); return c;
+}
+async function estimate(img, say, progress){
+  const pipe = await loadModel(say, progress);
+  say('깊이 계산 중…'); progress(1);
+  const small = fitImage(img, 640);
+  const t0 = performance.now();
+  const out = await pipe(small.toDataURL('image/jpeg', .92));
+  const raw = out.depth;                                   // RawImage, grayscale, bright = near
+  // normalise to full 0..1 range and blur slightly so the mesh doesn't stair-step
+  const w = raw.width, h = raw.height, px = raw.data, ch = raw.channels;
+  let mn = 255, mx = 0; for (let i=0;i<w*h;i++){ const v = px[i*ch]; if (v<mn) mn=v; if (v>mx) mx=v; }
+  const c = document.createElement('canvas'); c.width = w; c.height = h; const ctx = c.getContext('2d'), id = ctx.createImageData(w, h);
+  for (let i=0;i<w*h;i++){ const v = Math.round(255*(px[i*ch]-mn)/Math.max(1,mx-mn)); id.data[i*4]=id.data[i*4+1]=id.data[i*4+2]=v; id.data[i*4+3]=255; }
+  ctx.putImageData(id, 0, 0);
+  const b = document.createElement('canvas'); b.width = w; b.height = h; const bc = b.getContext('2d'); bc.filter = 'blur(1.2px)'; bc.drawImage(c, 0, 0);
+  say(`깊이 완료 ${(performance.now()-t0).toFixed(0)}ms (${w}×${h})`);
+  return b;
+}
+async function usePhoto(img, say, progress){
+  photoAspect = img.width/img.height;
+  photoTex = new THREE.Texture(fitImage(img, 1600)); photoTex.encoding = THREE.sRGBEncoding; photoTex.needsUpdate = true;
+  // flat first, so there's something on screen while the model runs
+  const flat = document.createElement('canvas'); flat.width = flat.height = 4; const fc = flat.getContext('2d'); fc.fillStyle = '#808080'; fc.fillRect(0,0,4,4);
+  depthTex = new THREE.CanvasTexture(flat); buildPhoto();
+  const dc = await estimate(img, say, progress);
+  depthTex = new THREE.CanvasTexture(dc); depthTex.minFilter = THREE.LinearFilter; updateUniforms();
+}
+window.__setDepth = c => { depthTex = new THREE.CanvasTexture(c); depthTex.minFilter = THREE.LinearFilter; updateUniforms(); };
+function loadImage(src){ return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = src; }); }
+
+// ---------- tracking: face ----------
+class OneEuro{ constructor(mc=1.2,b=.012,dc=1){this.mc=mc;this.b=b;this.dc=dc;this.x=null;this.dx=0;this.t=null;} static a(c,dt){const r=2*Math.PI*c*dt;return r/(r+1);}
+  filter(x,t){ if(this.x===null){this.x=x;this.t=t;return x;} const dt=Math.max(1e-3,(t-this.t)/1000); this.t=t; const dx=(x-this.x)/dt, ad=OneEuro.a(this.dc,dt); this.dx=ad*dx+(1-ad)*this.dx; const a=OneEuro.a(this.mc+this.b*Math.abs(this.dx),dt); this.x=a*x+(1-a)*this.x; return this.x; } }
+const fx = new OneEuro(1.5,.02), fy = new OneEuro(1.5,.02), fz = new OneEuro(.8,.01);
+let landmarker = null, lastVT = -1, frames = 0, fpsT = performance.now(), fps = 0;
+function eyeFromLandmarks(lm, vw, vh, t){
+  const a = lm[468], b = lm[473]; if (!a||!b) return null;
+  const cx=(a.x+b.x)/2, cy=(a.y+b.y)/2, ipdPx=Math.hypot((a.x-b.x)*vw,(a.y-b.y)*vh); if (ipdPx<4) return null;
+  const f=FOCAL_FACTOR*Math.max(vw,vh), z=Math.min(1200,Math.max(120,f*IPD_MM/ipdPx));
+  return { x:fx.filter(-(cx-.5)*vw*z/f,t), y:fy.filter(-(cy-.5)*vh*z/f+screenH/2+CAM_ABOVE_MM,t), z:fz.filter(z,t) };
+}
+async function startFace(say){
+  if (landmarker) return;
+  if (!isSecureContext || !navigator.mediaDevices?.getUserMedia) throw new Error('카메라는 https 주소에서만 열립니다.');
+  say('카메라 여는 중…');
+  const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:640}, height:{ideal:480}}, audio:false});
+  video.srcObject = stream; await video.play(); video.style.display = 'block';
+  say('얼굴 트래커 불러오는 중…');
+  const mod = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
+  const mp = mod.FaceLandmarker ? mod : mod.default;
+  const vision = await mp.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+  const make = d => mp.FaceLandmarker.createFromOptions(vision, { baseOptions:{ modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task', delegate:d }, runningMode:'VIDEO', numFaces:1 });
+  try { landmarker = await make('GPU'); } catch(e){ landmarker = await make('CPU'); }
+}
+function track(t){
+  if (mode !== 'face' || !landmarker || video.readyState < 2 || video.currentTime === lastVT) return;
+  lastVT = video.currentTime; const res = landmarker.detectForVideo(video, t);
+  frames++; if (t-fpsT > 1000){ fps = frames; frames = 0; fpsT = t; }
+  const lm = res.faceLandmarks && res.faceLandmarks[0];
+  if (lm){ const e = eyeFromLandmarks(lm, video.videoWidth, video.videoHeight, t); if (e){ target = e; lastFace = t; } }
+}
+
+// ---------- tracking: gyro ----------
+let gyroRef = null;
+addEventListener('deviceorientation', e => {
+  if (mode !== 'gyro' || e.beta === null) return;
+  if (!gyroRef) gyroRef = {b:e.beta, g:e.gamma};
+  const db = e.beta - gyroRef.b, dg = e.gamma - gyroRef.g;           // degrees of tilt from the starting pose
+  target = { x: -Math.max(-25, Math.min(25, dg)) * 6, y: Math.max(-25, Math.min(25, db)) * 6, z: 380 };
+  lastFace = performance.now();
+});
+async function startGyro(){
+  gyroRef = null;
+  if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'){
+    try { await DeviceOrientationEvent.requestPermission(); } catch(e){}
+  }
+}
+
+// ---------- tracking: touch ----------
+addEventListener('pointermove', ev => {
+  if (mode !== 'touch' || ev.target.closest('.ctl,.ov')) return;
+  target = { x:(ev.clientX/innerWidth-.5)*screenW*4, y:-(ev.clientY/innerHeight-.5)*screenH*4, z:340 }; lastFace = performance.now();
+});
+
+// ---------- UI ----------
+const say = t => { $('msg').textContent = t; st.textContent = t; };
+const progress = p => { $('bar').firstElementChild.style.width = (p*100).toFixed(0)+'%'; };
+async function begin(src){
+  $('err').textContent = ''; $('go').disabled = $('pick').disabled = true;
+  try{
+    const img = await loadImage(src);
+    try { await startFace(say); } catch(e){ say('얼굴 추적 불가 → 자이로'); setMode('gyro'); }
+    $('start').hidden = true;
+    await usePhoto(img, say, progress);
+  }catch(e){ $('err').textContent = e && e.message ? e.message : String(e); $('go').disabled = $('pick').disabled = false; }
+}
+$('go').onclick = () => begin('img/sample.jpg');
+$('pick').onclick = () => $('file').click();
+$('file').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  const url = URL.createObjectURL(f);
+  if (!$('start').hidden) begin(url); else { const img = await loadImage(url); await usePhoto(img, say, progress); }
+};
+function setMode(m){
+  mode = m; for (const k of ['Face','Gyro','Touch']) $('m'+k).classList.toggle('on', k.toLowerCase() === m);
+  if (m === 'gyro') startGyro();
+  if (m === 'face' && !landmarker) startFace(say).catch(e => { say('얼굴 추적 불가'); setMode('gyro'); });
+}
+$('mFace').onclick = () => setMode('face'); $('mGyro').onclick = () => setMode('gyro'); $('mTouch').onclick = () => setMode('touch');
+$('depth').oninput = e => { depthScale = e.target.value/100; $('depthv').textContent = e.target.value; updateUniforms(); };
+$('pop').oninput = e => { pop = e.target.value/100; $('popv').textContent = e.target.value; updateUniforms(); };
+$('cut').onchange = e => { cutEdges = e.target.checked; updateUniforms(); };
+$('sw').oninput = e => { screenW = +e.target.value; $('swv').textContent = screenW; resize(); };
+
+// ---------- loop ----------
+function loop(t){
+  requestAnimationFrame(loop);
+  track(t);
+  if (mode !== 'touch' && t - lastFace > 700) target = {...DEFAULT_EYE};
+  const k = .3; eye.x += (target.x-eye.x)*k; eye.y += (target.y-eye.y)*k; eye.z += (target.z-eye.z)*k;
+  applyEye(eye); renderer.render(scene, camera);
+  $('pos').textContent = `${mode}${mode==='face'?' '+fps+'fps':''} · ${eye.x.toFixed(0)},${eye.y.toFixed(0)},${eye.z.toFixed(0)}`;
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
