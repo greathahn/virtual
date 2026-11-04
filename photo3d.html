@@ -54,7 +54,8 @@
   <label>화면 폭 <input id="sw" type="range" min="50" max="400" value="68"><b id="swv">68</b>mm</label>
   <label style="cursor:pointer">📷 다른 사진 <input id="file" type="file" accept="image/*"></label>
   <button class="sm" id="gen3d" style="background:var(--panel)">🧊 3D 모델 만들기</button>
-  <div class="row" id="projrow" style="display:none"><span style="font-size:11px;color:var(--dim);padding:0 4px">투영</span><button class="sm" id="flipx">↔</button><button class="sm" id="flipy">↕</button></div>
+  <div class="row" id="projrow" style="display:none"><span style="font-size:11px;color:var(--dim);padding:0 4px">투영</span><button class="sm" id="alignBtn">맞추기</button><button class="sm" id="flipx">↔</button><button class="sm" id="flipy">↕</button></div>
+  <div class="row" id="alignrow" style="display:none"><span style="font-size:11px;color:var(--dim);padding:0 4px">사진을 드래그·핀치해서 모델에 맞추세요</span><button class="sm on" id="alignOk">적용</button><button class="sm" id="alignCancel">취소</button></div>
   <button class="sm" id="back2photo" style="background:var(--panel);display:none">📷 사진으로</button>
 </div>
 
@@ -356,7 +357,7 @@ async function generate3D(){
   }catch(e){ log('오류: ' + (e && e.message ? e.message : JSON.stringify(e))); }
   $('genrun').disabled = false;
 }
-let segmenter = null, proj = null;   // proj = {root, box, bb, fx, fy}
+let segmenter = null, proj = null, inner = null, meshBox = null, meshCtr = null, meshScale = 1, alignPlane = null, aligning = false, lastBB = [0,0,1,1];
 async function subjectBox(img){
   // normalised [x0,y0,x1,y1] of the foreground subject in the photo (top-left origin)
   try{
@@ -406,7 +407,7 @@ async function showModel(url){
   if (model3d) scene.remove(model3d);
   model3d = g.scene;
   const box = new THREE.Box3().setFromObject(model3d), size = box.getSize(new THREE.Vector3()), ctr = box.getCenter(new THREE.Vector3());
-  const W = screenW, H = screenH, sc = Math.min(W, H) * 0.75 / Math.max(size.x, size.y, size.z);
+  const W = screenW, H = screenH, sc = Math.min(W, H) * 0.8 / Math.max(size.x, size.y, size.z);
   model3d.position.sub(ctr).multiplyScalar(sc); model3d.scale.setScalar(sc);
   // untextured meshes come in plain white; give them a readable material
   model3d.traverse(o => { if (!o.isMesh) return;
@@ -415,8 +416,9 @@ async function showModel(url){
     o.material = new THREE.MeshStandardMaterial({ map: tex || null, color: tex ? 0xffffff : 0xd9d3c7, roughness:.7, metalness:.02, side: THREE.DoubleSide });
     if (tex) tex.encoding = THREE.sRGBEncoding; });
   let untextured = true; model3d.traverse(o => { if (o.isMesh && o.material.map) untextured = false; });
-  if (untextured && photoTex && lastImageEl){ log('피사체 분할 + 사진 투영…'); const bb = (await subjectBox(lastImageEl)) || [0,0,1,1]; model3d.position.set(0,0,0); model3d.scale.setScalar(1); projectPhoto(model3d, box, bb); model3d.position.sub(ctr).multiplyScalar(sc); model3d.scale.setScalar(sc); }
-  const holder = new THREE.Group(); holder.add(model3d); holder.position.z = -W * 0.7; model3d = holder;
+  if (untextured && photoTex && lastImageEl){ log('피사체 분할 + 사진 투영…'); const bb = (await subjectBox(lastImageEl)) || [0.1,0.1,0.9,0.9]; lastBB = bb; model3d.position.set(0,0,0); model3d.scale.setScalar(1); projectPhoto(model3d, box, bb); model3d.position.sub(ctr).multiplyScalar(sc); model3d.scale.setScalar(sc); }
+  inner = model3d; meshBox = box; meshCtr = ctr; meshScale = sc;
+  const holder = new THREE.Group(); holder.add(model3d); holder.position.z = -W * 0.95; model3d = holder;
   scene.add(model3d); $('back2photo').style.display = ''; $('projrow').style.display = untextured ? '' : 'none';
   if (!scene.getObjectByName('mlight')){ const l = new THREE.DirectionalLight(0xffffff, 1.2); l.name = 'mlight'; l.position.set(1, 2, 3); scene.add(l); const l2 = new THREE.DirectionalLight(0x8899ff, .5); l2.position.set(-2, -1, 1); scene.add(l2); scene.add(new THREE.AmbientLight(0xffffff, .6)); }
   if (photo) photo.visible = false;
@@ -429,9 +431,59 @@ async function showApi(){
 }
 $('gen3d').onclick = () => { $('genov').hidden = false; try { $('hftok').value = localStorage.getItem('hf_token') || ''; } catch(e){} };
 $('hfmodel').onchange = e => { $('customwrap').style.display = e.target.value === 'custom' ? 'grid' : 'none'; };
-function reproject(fx, fy){ if (!proj) return; const r = proj.root, p = r.position.clone(), sc = r.scale.x; r.position.set(0,0,0); r.scale.setScalar(1); projectPhoto(r, proj.box, proj.bb, fx, fy); r.position.copy(p); r.scale.setScalar(sc); }
-$('flipx').onclick = () => reproject(!proj.fx, proj.fy); $('flipy').onclick = () => reproject(proj.fx, !proj.fy);
-$('back2photo').onclick = () => { if (model3d){ scene.remove(model3d); model3d = null; } if (photo) photo.visible = true; $('back2photo').style.display = 'none'; $('projrow').style.display = 'none'; };
+function reproject(bb, fx, fy){ if (!inner) return; const r = inner; r.position.set(0,0,0); r.scale.setScalar(1); projectPhoto(r, meshBox, bb, fx, fy); r.position.copy(meshCtr).negate().multiplyScalar(meshScale); r.scale.setScalar(meshScale); }
+function startAlign(){
+  if (!model3d || !inner) return;
+  aligning = true; model3d.rotation.set(0,0,0);
+  const sz = meshBox.getSize(new THREE.Vector3()), mw = sz.x*meshScale, mh = sz.y*meshScale;
+  const [bx0, by0, bx1, by1] = lastBB;
+  const Pw = mw / Math.max(0.05, bx1-bx0), Ph = Pw / photoAspect;
+  if (alignPlane) model3d.remove(alignPlane);
+  alignPlane = new THREE.Mesh(new THREE.PlaneGeometry(Pw, Ph), new THREE.MeshBasicMaterial({ map: photoTex, transparent:true, opacity:.55, depthTest:false, depthWrite:false }));
+  alignPlane.renderOrder = 20;
+  alignPlane.position.set(-((bx0+bx1)/2 - 0.5)*Pw, ((by0+by1)/2 - 0.5)*Ph, 0);
+  alignPlane.userData = {Pw, Ph, mw, mh};
+  model3d.add(alignPlane);
+  $('alignrow').style.display = ''; $('projrow').style.display = 'none';
+}
+function finishAlign(apply){
+  if (!alignPlane) return;
+  if (apply){
+    const {Pw, Ph, mw, mh} = alignPlane.userData, s = alignPlane.scale.x, px = alignPlane.position.x, py = alignPlane.position.y;
+    const left = px - Pw*s/2, top = py + Ph*s/2;
+    const bb = [(-mw/2 - left)/(Pw*s), (top - mh/2)/(Ph*s), (mw/2 - left)/(Pw*s), (top + mh/2)/(Ph*s)];
+    lastBB = bb; reproject(bb, false, false);
+    log('투영 적용 ' + bb.map(v => v.toFixed(2)).join(','));
+  }
+  model3d.remove(alignPlane); alignPlane = null; aligning = false;
+  $('alignrow').style.display = 'none'; $('projrow').style.display = '';
+}
+// gestures: align mode → move/scale the photo; otherwise drag rotates the model
+const ptrs = new Map(); let gestPrev = null;
+function mmPerPx(){ return (screenW/innerWidth) * (eye.z + Math.abs(model3d ? model3d.position.z : 0)) / eye.z; }
+canvas.addEventListener('pointerdown', e => { ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY}); gestPrev = null; });
+canvas.addEventListener('pointermove', e => {
+  if (!ptrs.has(e.pointerId) || !model3d) return;
+  ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
+  const P = [...ptrs.values()];
+  const cx = P.reduce((a,p)=>a+p.x,0)/P.length, cy = P.reduce((a,p)=>a+p.y,0)/P.length;
+  const dist = P.length >= 2 ? Math.hypot(P[0].x-P[1].x, P[0].y-P[1].y) : 0;
+  if (gestPrev){
+    const dx = cx - gestPrev.cx, dy = cy - gestPrev.cy;
+    if (aligning && alignPlane){
+      const k = mmPerPx(); alignPlane.position.x += dx*k; alignPlane.position.y -= dy*k;
+      if (dist && gestPrev.dist) alignPlane.scale.multiplyScalar(dist/gestPrev.dist);
+    } else if (mode !== 'touch'){
+      model3d.rotation.y += dx*0.01; model3d.rotation.x = Math.max(-1.2, Math.min(1.2, model3d.rotation.x + dy*0.01));
+    }
+  }
+  gestPrev = {cx, cy, dist};
+});
+const endPtr = e => { ptrs.delete(e.pointerId); gestPrev = null; };
+canvas.addEventListener('pointerup', endPtr); canvas.addEventListener('pointercancel', endPtr);
+$('alignBtn').onclick = startAlign; $('alignOk').onclick = () => finishAlign(true); $('alignCancel').onclick = () => finishAlign(false);
+$('flipx').onclick = () => proj && reproject(proj.bb, !proj.fx, proj.fy); $('flipy').onclick = () => proj && reproject(proj.bb, proj.fx, !proj.fy);
+$('back2photo').onclick = () => { if (alignPlane) finishAlign(false); if (model3d){ scene.remove(model3d); model3d = null; inner = null; } if (photo) photo.visible = true; $('back2photo').style.display = 'none'; $('projrow').style.display = 'none'; };
 $('genrun').onclick = generate3D; $('genapi').onclick = showApi; $('gencancel').onclick = () => { $('genov').hidden = true; };
 
 // ---------- UI ----------
@@ -470,8 +522,7 @@ function loop(t){
   track(t);
   if (mode !== 'touch' && t - lastFace > 700) target = {...DEFAULT_EYE};
   const k = .3; eye.x += (target.x-eye.x)*k; eye.y += (target.y-eye.y)*k; eye.z += (target.z-eye.z)*k;
-  if (model3d){ spin += 0.0025; const yaw = -(eye.x - DEFAULT_EYE.x) * 0.014, pitch = Math.max(-.6, Math.min(.6, (eye.y - DEFAULT_EYE.y) * 0.008));
-    model3d.rotation.y += ((spin + yaw) - model3d.rotation.y) * .15; model3d.rotation.x += (pitch - model3d.rotation.x) * .15; }
+  if (aligning) target = {...DEFAULT_EYE};
   applyEye(eye); renderer.render(scene, camera);
   $('pos').textContent = `${mode}${mode==='face'?' '+fps+'fps':''} · ${eye.x.toFixed(0)},${eye.y.toFixed(0)},${eye.z.toFixed(0)}`;
 }
