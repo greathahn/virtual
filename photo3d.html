@@ -260,17 +260,17 @@ const log = t => { const el = $('genlog'); el.textContent += t + '\n'; el.scroll
 async function imageBlob(img){ const c = fitImage(img, 1024); return await new Promise(r => c.toBlob(r, 'image/png')); }
 async function space(id, tok){
   const hh = tok ? {Authorization:'Bearer '+tok} : {};
-  const hr = await fetch(`https://huggingface.co/api/spaces/${id}/host`, {headers:hh});
+  let hr; try { hr = await fetch(`https://huggingface.co/api/spaces/${id}/host`, {headers:hh}); } catch(e){ throw new Error('huggingface.co 접속 실패 (' + e.message + ')'); }
   if (!hr.ok) throw new Error(`host 조회 실패 ${hr.status} (스페이스가 꺼져 있거나 토큰 문제)`);
-  const base = 'https://' + (await hr.json()).host;
+  const hostv = (await hr.json()).host; const base = /^https?:\/\//.test(hostv) ? hostv.replace(/\/$/,'') : 'https://' + hostv;
   let sign = '';
   if (tok){ try{ const jr = await fetch(`https://huggingface.co/api/spaces/${id}/jwt`, {headers:hh}); if (jr.ok) sign = '?__sign=' + encodeURIComponent((await jr.json()).token); }catch(e){} }
-  const cfg = await (await fetch(`${base}/config${sign}`)).json();
+  let cfg; try { cfg = await (await fetch(`${base}/config${sign}`)).json(); } catch(e){ throw new Error('config 요청 실패 ' + base + ' (' + e.message + ')'); }
   const prefix = (cfg.version || '5').split('.')[0] >= 5 ? '/gradio_api' : '';
   log(`gradio ${cfg.version} · ${base.replace('https://','')}`);
   const upload = async (blob, name='image.png') => {
     const fd = new FormData(); fd.append('files', blob, name);
-    const r = await fetch(`${base}${prefix}/upload${sign}`, {method:'POST', body:fd});
+    let r; try { r = await fetch(`${base}${prefix}/upload${sign}`, {method:'POST', body:fd}); } catch(e){ throw new Error('업로드 요청 실패 (' + e.message + ')'); }
     if (!r.ok) throw new Error('업로드 실패 ' + r.status);
     const [path] = await r.json(); return {path, meta:{_type:'gradio.FileData'}};
   };
@@ -278,7 +278,7 @@ async function space(id, tok){
     const r = await fetch(`${base}${prefix}/call/${ep}${sign}`, {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({data})});
     if (!r.ok) throw new Error(`${ep} 호출 실패 ${r.status}: ${(await r.text()).slice(0,200)}`);
     const {event_id} = await r.json();
-    const txt = await (await fetch(`${base}${prefix}/call/${ep}/${event_id}${sign}`)).text();
+    let txt; try { txt = await (await fetch(`${base}${prefix}/call/${ep}/${event_id}${sign}`)).text(); } catch(e){ throw new Error(ep + ' 결과 수신 실패 (' + e.message + ')'); }
     const lines = txt.split('\n'); let ev = '';
     for (const ln of lines){
       if (ln.startsWith('event:')) ev = ln.slice(6).trim();
