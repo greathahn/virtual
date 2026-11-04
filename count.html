@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>LATTICE</title>
+<style>
+  :root{ --bg:#07090e; --fg:#eef1f6; --dim:#8e98a8; --accent:#ffb347; --good:#6ee7a8; --bad:#ff6b7a; --panel:rgba(7,9,14,.66); --mono:ui-monospace,"SF Mono",Menlo,monospace; }
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);overflow:hidden;
+    font:14px/1.45 system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;-webkit-user-select:none;user-select:none;touch-action:none}
+  #c{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #v{position:fixed;left:max(10px,env(safe-area-inset-left,0px));bottom:max(10px,env(safe-area-inset-bottom,0px));
+    width:60px;height:80px;object-fit:cover;border:1px solid #223;border-radius:8px;opacity:.65;transform:scaleX(-1);display:none}
+  #hud{position:fixed;top:0;left:0;right:0;padding:calc(10px + env(safe-area-inset-top,0px)) max(14px,env(safe-area-inset-right,0px)) 0 max(14px,env(safe-area-inset-left,0px));
+    display:flex;justify-content:space-between;align-items:flex-start;pointer-events:none;font-variant-numeric:tabular-nums}
+  .lv{font-weight:800;font-size:15px;letter-spacing:.04em}
+  .sub{font:11px var(--mono);color:var(--dim)}
+  #q{position:fixed;left:50%;top:calc(52px + env(safe-area-inset-top,0px));transform:translateX(-50%);font-weight:700;font-size:16px;
+    background:var(--panel);padding:8px 14px;border-radius:999px;backdrop-filter:blur(6px);pointer-events:none;white-space:nowrap}
+  #answers{position:fixed;left:0;right:0;bottom:calc(14px + env(safe-area-inset-bottom,0px));display:flex;justify-content:center;gap:10px;
+    padding:0 max(16px,env(safe-area-inset-left,0px)) 0 max(16px,env(safe-area-inset-right,0px))}
+  #answers button{flex:1;max-width:84px;font:800 24px var(--mono);padding:14px 0;border-radius:14px;border:1px solid #2a3140;background:var(--panel);color:var(--fg);backdrop-filter:blur(6px)}
+  #answers button.ok{background:var(--good);color:#06301b;border-color:var(--good)}
+  #answers button.no{background:var(--bad);color:#3a060c;border-color:var(--bad)}
+  #answers button:disabled{opacity:.9}
+  .ctl{position:fixed;top:calc(96px + env(safe-area-inset-top,0px));right:0;padding:0 max(12px,env(safe-area-inset-right,0px)) 0 0;
+    display:flex;flex-direction:column;gap:6px;align-items:flex-end;font-size:11px}
+  .ctl label{display:flex;gap:6px;align-items:center;background:var(--panel);padding:5px 9px;border-radius:8px;backdrop-filter:blur(6px);color:var(--fg)}
+  .ctl b{font:10px var(--mono);min-width:3ch;text-align:right}
+  input[type=range]{width:70px;accent-color:var(--accent)}
+  input[type=checkbox]{accent-color:var(--accent)}
+  #toast{position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);font-size:34px;font-weight:900;text-align:center;
+    text-shadow:0 2px 18px rgba(0,0,0,.8);pointer-events:none;opacity:0;transition:opacity .2s}
+  #toast small{display:block;font-size:14px;font-weight:500;color:var(--dim)}
+  button.big{font:inherit;font-weight:700;padding:13px 24px;border-radius:999px;border:0;background:var(--accent);color:#2a1700}
+  .ov{position:fixed;inset:0;display:grid;place-items:center;background:rgba(7,9,14,.9);
+    padding:0 max(16px,env(safe-area-inset-left,0px)) 0 max(16px,env(safe-area-inset-right,0px))}
+  .ov[hidden]{display:none}
+  .ov > div{max-width:320px;text-align:center}
+  .ov h1{font-size:30px;margin:0 0 6px;letter-spacing:.14em}
+  .ov p{color:var(--dim);margin:0 0 18px}
+  #msg{color:var(--dim);font:12px var(--mono);margin-top:14px}
+  #err{color:#ff8a80;font:12px var(--mono);margin-top:8px;white-space:pre-wrap}
+  .btns{display:flex;gap:8px;justify-content:center}
+  button.alt{background:#1e222b;color:var(--fg)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<video id="v" playsinline muted autoplay></video>
+<div id="hud"><div><div class="lv" id="lv">LEVEL 1</div><div class="sub" id="score">0점</div></div><div style="text-align:right"><div class="lv" id="time">0.0</div><div class="sub" id="st">idle</div></div></div>
+<div id="q">블록이 몇 개?</div>
+<div id="toast"></div>
+<div class="ctl">
+  <label>감도 <input id="gain" type="range" min="10" max="30" value="18"><b id="gainv">1.8</b></label>
+  <label>폭 <input id="sw" type="range" min="50" max="400" value="68"><b id="swv">68</b></label>
+  <label><input id="inv" type="checkbox"> X반전</label>
+  <label><input id="touch" type="checkbox"> 터치</label>
+</div>
+<div id="answers"></div>
+
+<div class="ov" id="start"><div>
+  <h1>LATTICE</h1>
+  <p>창 너머 격자에 블록이 몇 개 들어 있을까요? 정면에선 뒤가 안 보입니다.<br>고개를 움직여 옆에서 들여다보고, 뒷벽의 <b>거울</b>로 뒤쪽을 확인하세요.</p>
+  <div class="btns"><button class="big" id="go">카메라 시작</button><button class="big alt" id="goTouch">터치로 해보기</button></div>
+  <div id="msg"></div><div id="err"></div>
+</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script type="module">
+const $ = id => document.getElementById(id);
+const canvas = $('c'), video = $('v'), st = $('st');
+const IPD_MM = 63, CAM_ABOVE_MM = 8, FOCAL_FACTOR = 0.8, DEFAULT_EYE = {x:0, y:0, z:380};
+let screenW = 68, screenH = 68 * innerHeight / innerWidth;
+let eye = {...DEFAULT_EYE}, target = {...DEFAULT_EYE}, lastFace = 0, rawRest = null, gain = 1.8, invertX = false, touchMode = false;
+let level = 1, score = 0, running = false, levelStart = 0, answer = 0, toastUntil = 0;
+
+// ---------- three ----------
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true, stencil:true, powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.outputEncoding = THREE.sRGBEncoding;
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x07090e);
+const camera = new THREE.PerspectiveCamera();
+const room = new THREE.Group(), lattice = new THREE.Group(), mirrorGroup = new THREE.Group();
+scene.add(room, lattice, mirrorGroup);
+scene.add(new THREE.AmbientLight(0x8899bb, .45));
+const key = new THREE.PointLight(0xfff1dc, 1.3, 0, 2), fill = new THREE.PointLight(0x7fb7ff, .6, 0, 2); scene.add(key, fill);
+
+let D = 0, MIRROR_Z = 0;
+function gridLines(w, h, step, color, opacity){
+  const pts = [], nx = Math.max(1, Math.round(w/step)), ny = Math.max(1, Math.round(h/step));
+  for (let i=0;i<=nx;i++){ const x = -w/2 + i*(w/nx); pts.push(x,-h/2,0, x,h/2,0); }
+  for (let j=0;j<=ny;j++){ const y = -h/2 + j*(h/ny); pts.push(-w/2,y,0, w/2,y,0); }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pts,3));
+  return new THREE.LineSegments(g, new THREE.LineBasicMaterial({color, transparent:true, opacity}));
+}
+function wall(w, h, step, pos, rot, tint){
+  const grp = new THREE.Group();
+  grp.add(new THREE.Mesh(new THREE.PlaneGeometry(w,h), new THREE.MeshLambertMaterial({color:tint})));
+  const l = gridLines(w, h, step, 0x33425c, .4); l.position.z = .5; grp.add(l);
+  grp.position.copy(pos); grp.rotation.set(rot.x, rot.y, rot.z); return grp;
+}
+function clearGroup(g){ while (g.children.length) g.remove(g.children[0]); }
+function buildRoom(){
+  clearGroup(room);
+  const W = screenW, H = screenH; D = W*2.0; MIRROR_Z = -D + 1; const step = W/8;
+  const V = (x,y,z)=>new THREE.Vector3(x,y,z), R = (x,y,z)=>({x,y,z});
+  room.add(wall(D, H, step, V(-W/2,0,-D/2), R(0, Math.PI/2,0), 0x0c1119));
+  room.add(wall(D, H, step, V( W/2,0,-D/2), R(0,-Math.PI/2,0), 0x0c1119));
+  room.add(wall(W, D, step, V(0,-H/2,-D/2), R(-Math.PI/2,0,0), 0x0a0e15));
+  room.add(wall(W, D, step, V(0, H/2,-D/2), R( Math.PI/2,0,0), 0x0a0e15));
+  // back wall = mirror: a frame plus the stencil quad; the mirrored world is drawn behind it
+  const fm = new THREE.MeshStandardMaterial({color:0x2a3444, roughness:.5, metalness:.5}), t = W*0.03;
+  const mw = W - 2*t, mh = H - 2*t;
+  const fb = (w,h,x,y)=>{ const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,t), fm); m.position.set(x,y,-D+t/2); room.add(m); };
+  fb(W,t,0,H/2-t/2); fb(W,t,0,-H/2+t/2); fb(t,H,-W/2+t/2,0); fb(t,H,W/2-t/2,0);
+  const mask = new THREE.Mesh(new THREE.PlaneGeometry(mw, mh), new THREE.MeshBasicMaterial({colorWrite:false, depthWrite:false}));
+  mask.material.stencilWrite = true; mask.material.stencilRef = 1; mask.material.stencilFunc = THREE.AlwaysStencilFunc; mask.material.stencilZPass = THREE.ReplaceStencilOp;
+  mask.position.z = MIRROR_Z; mask.renderOrder = 0; room.add(mask);
+  // mirror tint drawn last, slightly in front
+  const tint = new THREE.Mesh(new THREE.PlaneGeometry(mw, mh), new THREE.MeshBasicMaterial({color:0x9fc4e8, transparent:true, opacity:.08, depthWrite:false}));
+  tint.position.z = MIRROR_Z + .5; tint.renderOrder = 3; room.add(tint);
+  // window frame at the screen plane
+  const f2 = new THREE.MeshStandardMaterial({color:0x1b2330, roughness:.6, metalness:.3});
+  const fw = (w,h,x,y)=>{ const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,t*2), f2); m.position.set(x,y,-t); room.add(m); };
+  fw(W,t,0,H/2-t/2); fw(W,t,0,-H/2+t/2); fw(t,H,-W/2+t/2,0); fw(t,H,W/2-t/2,0);
+  key.position.set(W*0.2, H*0.4, -D*0.25); fill.position.set(-W*0.3, -H*0.2, -D*0.7);
+}
+
+// ---------- lattice ----------
+let N = 3, cells = [];
+const cubeMat = new THREE.MeshStandardMaterial({color:0xffb347, roughness:.55, metalness:.05});
+const edgeMat = new THREE.LineBasicMaterial({color:0x2a1700, transparent:true, opacity:.6});
+const cageMat = new THREE.LineBasicMaterial({color:0x5b6b85, transparent:true, opacity:.5});
+function flipWinding(g){ const idx = g.index; if (idx){ const a = idx.array; for (let i=0;i<a.length;i+=3){ const t = a[i+1]; a[i+1] = a[i+2]; a[i+2] = t; } idx.needsUpdate = true; } return g; }
+function reflectGeom(src){ const g = src.clone().applyMatrix4(new THREE.Matrix4().makeScale(1,1,-1)); if (g.index) flipWinding(g); return g; }
+function stencilClone(mat){ const m = mat.clone(); if (m.color) m.color = m.color.clone().multiplyScalar(0.72); m.stencilWrite = true; m.stencilRef = 1; m.stencilFunc = THREE.EqualStencilFunc; return m; }
+function buildLattice(){
+  clearGroup(lattice); clearGroup(mirrorGroup);
+  const W = screenW, H = screenH;
+  const size = Math.min(W, H) * 0.62, s = size / N, cube = s * 0.78;
+  const cz = -D * 0.42, origin = new THREE.Vector3(-size/2 + s/2, -size/2 + s/2, cz - size/2 + s/2);
+  // cage
+  const cage = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(size, size, size)), cageMat); cage.position.set(0, 0, cz); lattice.add(cage);
+  // fill pattern: ensure some are hidden from straight on
+  const total = N*N*N;
+  const lo = Math.round(total * (0.3 + Math.min(level, 6) * 0.03)), hi = Math.round(total * 0.72);
+  let count, tries = 0;
+  do {
+    cells = []; count = 0;
+    const want = lo + Math.floor(Math.random() * (hi - lo + 1));
+    const idx = [...Array(total).keys()].sort(() => Math.random() - .5).slice(0, want);
+    cells = Array(total).fill(false); for (const i of idx) cells[i] = true; count = want;
+    tries++;
+  } while (tries < 50 && visibleFromFront() >= count);   // at least one block must be hidden from straight on
+  answer = count;
+  const geo = new THREE.BoxGeometry(cube, cube, cube), eg = new THREE.EdgesGeometry(geo);
+  for (let i=0;i<total;i++){
+    if (!cells[i]) continue;
+    const x = i % N, y = Math.floor(i / N) % N, z = Math.floor(i / (N*N));
+    const m = new THREE.Mesh(geo, cubeMat); m.position.set(origin.x + x*s, origin.y + y*s, origin.z + z*s);
+    m.add(new THREE.LineSegments(eg, edgeMat)); lattice.add(m);
+  }
+  // mirrored copy (virtual image behind the mirror plane) — visible only through the mirror stencil
+  // explicit reflection: z' = 2*MIRROR_Z - z baked into cloned geometry (normals + winding fixed), no negative scale
+  mirrorGroup.position.set(0,0,0); mirrorGroup.scale.set(1,1,1);
+  const mirLat = new THREE.Group(); mirLat.position.set(0, 0, 2*MIRROR_Z - cz); mirrorGroup.add(mirLat);   // pivot = reflected lattice centre
+  for (const o of lattice.children){
+    if (o.isLineSegments){ const l = new THREE.LineSegments(reflectGeom(o.geometry), stencilClone(o.material)); l.position.set(o.position.x, o.position.y, -(o.position.z - cz)); l.renderOrder = 2; mirLat.add(l); continue; }
+    const m = new THREE.Mesh(reflectGeom(o.geometry), stencilClone(o.material)); m.position.set(o.position.x, o.position.y, -(o.position.z - cz)); m.renderOrder = 2;
+    for (const ch of o.children) if (ch.isLineSegments){ const l = new THREE.LineSegments(reflectGeom(ch.geometry), stencilClone(ch.material)); l.renderOrder = 2; m.add(l); }
+    mirLat.add(m);
+  }
+  // what the mirror shows where the window would be: a wall 'behind the viewer', so the reflection isn't a black hole
+  { const W = screenW, H = screenH, bw = wall(W, H, W/8, new THREE.Vector3(0,0,2*MIRROR_Z), {x:0,y:0,z:0}, 0x0c1119); bw.traverse(o => { if (o.material){ o.material = stencilClone(o.material); o.renderOrder = 2; } }); mirrorGroup.add(bw); }
+  room.updateMatrixWorld(true);
+  const Mref = new THREE.Matrix4().makeScale(1,1,-1).premultiply(new THREE.Matrix4().makeTranslation(0,0,2*MIRROR_Z));
+  for (const w of room.children.slice(0, 4)) w.traverse(o => {
+    if (!(o.isMesh || o.isLineSegments)) return;
+    const g = o.geometry.clone().applyMatrix4(o.matrixWorld).applyMatrix4(Mref); if (o.isMesh) flipWinding(g);
+    const c = o.isMesh ? new THREE.Mesh(g, stencilClone(o.material)) : new THREE.LineSegments(g, stencilClone(o.material)); c.renderOrder = 2; mirrorGroup.add(c);
+  });
+  function visibleFromFront(){
+    // count blocks visible from the default eye (first hit along each ray)
+    const e = DEFAULT_EYE, seen = new Set();
+    for (let i=0;i<total;i++){
+      if (!cells[i]) continue;
+      const x = i % N, y = Math.floor(i / N) % N, z = Math.floor(i / (N*N));
+      // straight-on: a block is visible if nothing is in front of it (same x,y, larger z)
+      let blocked = false; for (let zz=z+1; zz<N; zz++) if (cells[x + y*N + zz*N*N]) blocked = true;
+      if (!blocked) seen.add(i);
+    }
+    return seen.size;
+  }
+  $('lv').textContent = `LEVEL ${level} · ${N}×${N}×${N}`;
+  makeAnswers(); levelStart = performance.now(); running = true;
+}
+function makeAnswers(){
+  const opts = new Set([answer]); const spread = N === 3 ? 3 : 4;
+  while (opts.size < 4){ const v = answer + (Math.floor(Math.random()*(spread*2+1)) - spread); if (v >= 1 && v <= N*N*N) opts.add(v); }
+  const arr = [...opts].sort((a,b)=>a-b);
+  $('answers').innerHTML = arr.map(v => `<button data-v="${v}">${v}</button>`).join('');
+  for (const b of $('answers').children) b.onclick = () => pick(+b.dataset.v, b);
+}
+function pick(v, btn){
+  if (!running) return; running = false;
+  const sec = (performance.now() - levelStart)/1000;
+  for (const b of $('answers').children){ b.disabled = true; if (+b.dataset.v === answer) b.classList.add('ok'); }
+  if (v === answer){ const pts = Math.max(10, Math.round(100 - sec*2)); score += pts; toast('정답!', `+${pts} · ${sec.toFixed(1)}s`); blip(880,.15); blip(1320,.25,'sine',.1);
+    setTimeout(() => { level++; if (level >= 4) N = 4; buildLattice(); }, 1300); }
+  else { btn.classList.add('no'); toast(`${answer}개`, '틀렸어요 — 보여드릴게요'); blip(160,.3,'sawtooth',.2); reveal(); setTimeout(() => { buildLattice(); }, 3200); }
+  $('score').textContent = score + '점';
+}
+let revealT = 0;
+function reveal(){ revealT = performance.now(); }
+function toast(big, small, ms=1200){ $('toast').innerHTML = big + (small ? '<small>'+small+'</small>' : ''); toastUntil = performance.now() + ms; }
+
+function resize(){ renderer.setSize(innerWidth, innerHeight, false); screenH = screenW*innerHeight/innerWidth; buildRoom(); if (running || level > 1) buildLattice(); }
+addEventListener('resize', resize); resize();
+
+function applyEye(e){
+  const n = 10, f = 6000, s = n/e.z;
+  camera.projectionMatrix.makePerspective((-screenW/2-e.x)*s, (screenW/2-e.x)*s, (screenH/2-e.y)*s, (-screenH/2-e.y)*s, n, f);
+  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  camera.position.set(e.x,e.y,e.z); camera.rotation.set(0,0,0);
+}
+
+// ---------- tracking ----------
+class OneEuro{ constructor(mc=1.2,b=.012,dc=1){this.mc=mc;this.b=b;this.dc=dc;this.x=null;this.dx=0;this.t=null;} static a(c,dt){const r=2*Math.PI*c*dt;return r/(r+1);}
+  filter(x,t){ if(this.x===null){this.x=x;this.t=t;return x;} const dt=Math.max(1e-3,(t-this.t)/1000); this.t=t; const dx=(x-this.x)/dt, ad=OneEuro.a(this.dc,dt); this.dx=ad*dx+(1-ad)*this.dx; const a=OneEuro.a(this.mc+this.b*Math.abs(this.dx),dt); this.x=a*x+(1-a)*this.x; return this.x; } }
+const fx = new OneEuro(1.5,.02), fy = new OneEuro(1.5,.02), fz = new OneEuro(.8,.01);
+let landmarker = null, lastVT = -1, frames = 0, fpsT = performance.now(), fps = 0, restSamples = [];
+function eyeFromLandmarks(lm, vw, vh, t){
+  const a = lm[468], b = lm[473]; if (!a||!b) return null;
+  const cx=(a.x+b.x)/2, cy=(a.y+b.y)/2, ipdPx=Math.hypot((a.x-b.x)*vw,(a.y-b.y)*vh); if (ipdPx<4) return null;
+  const f=FOCAL_FACTOR*Math.max(vw,vh), z=Math.min(1200,Math.max(120,f*IPD_MM/ipdPx));
+  let x = -(cx-.5)*vw*z/f, y = -(cy-.5)*vh*z/f + screenH/2 + CAM_ABOVE_MM; if (invertX) x = -x;
+  return { x:fx.filter(x,t), y:fy.filter(y,t), z:fz.filter(z,t) };
+}
+function amplify(e){ if (!rawRest) return e; return { x: rawRest.x + (e.x-rawRest.x)*gain, y: rawRest.y + (e.y-rawRest.y)*gain, z: e.z }; }
+async function startCamera(){
+  const err = $('err'), msg = $('msg'); err.textContent = '';
+  const say = t => { msg.textContent = t; st.textContent = t; };
+  try{ ac = ac || new (window.AudioContext||window.webkitAudioContext)(); ac.resume(); }catch(e){}
+  if (!isSecureContext || !navigator.mediaDevices?.getUserMedia){ err.textContent = '카메라는 https 주소에서만 열립니다.'; return; }
+  try{
+    $('go').disabled = true; say('카메라 여는 중…');
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:640}, height:{ideal:480}}, audio:false});
+    video.srcObject = stream; await video.play(); video.style.display = 'block';
+    say('트래커 불러오는 중 (~5 MB)…');
+    const mod = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
+    const mp = mod.FaceLandmarker ? mod : mod.default;
+    const vision = await mp.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+    const make = d => mp.FaceLandmarker.createFromOptions(vision, { baseOptions:{ modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task', delegate:d }, runningMode:'VIDEO', numFaces:1 });
+    try { landmarker = await make('GPU'); } catch(e){ landmarker = await make('CPU'); }
+    $('start').hidden = true; st.textContent = 'tracking'; buildLattice();
+  }catch(e){ $('go').disabled = false; say('idle'); err.textContent = (e && e.message) ? e.message : String(e); }
+}
+function track(t){
+  if (!landmarker || touchMode || video.readyState < 2 || video.currentTime === lastVT) return;
+  lastVT = video.currentTime; const res = landmarker.detectForVideo(video, t);
+  frames++; if (t-fpsT > 1000){ fps = frames; frames = 0; fpsT = t; }
+  const lm = res.faceLandmarks && res.faceLandmarks[0];
+  if (lm){ const e = eyeFromLandmarks(lm, video.videoWidth, video.videoHeight, t); if (e){
+    if (!rawRest){ restSamples.push(e); if (restSamples.length >= 12){ const s = restSamples.slice(-8); rawRest = { x:s.reduce((a,b)=>a+b.x,0)/s.length, y:s.reduce((a,b)=>a+b.y,0)/s.length, z:s.reduce((a,b)=>a+b.z,0)/s.length }; } }
+    target = amplify(e); lastFace = t; } }
+}
+addEventListener('pointermove', ev => {
+  if (!touchMode || ev.target.closest('.ctl,.ov,#answers')) return;
+  target = { x:(ev.clientX/innerWidth-.5)*screenW*4, y:-(ev.clientY/innerHeight-.5)*screenH*4, z:340 }; lastFace = performance.now();
+});
+
+// ---------- audio ----------
+let ac = null;
+function blip(freq=880, dur=.12, type='triangle', gain=.16){
+  if (!ac) return; const o = ac.createOscillator(), g = ac.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, ac.currentTime); o.frequency.exponentialRampToValueAtTime(freq*1.4, ac.currentTime+dur);
+  g.gain.setValueAtTime(gain, ac.currentTime); g.gain.exponentialRampToValueAtTime(.001, ac.currentTime+dur);
+  o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime+dur);
+}
+
+// ---------- controls ----------
+$('go').onclick = startCamera;
+$('goTouch').onclick = () => { $('touch').checked = true; $('touch').dispatchEvent(new Event('change')); };
+$('touch').onchange = e => { touchMode = e.target.checked; if (touchMode){ $('start').hidden = true; try{ ac = ac || new (window.AudioContext||window.webkitAudioContext)(); }catch(_){} if (!running) buildLattice(); } st.textContent = touchMode ? 'touch' : (landmarker ? 'tracking' : 'idle'); };
+$('inv').onchange = e => { invertX = e.target.checked; rawRest = null; restSamples = []; };
+$('gain').oninput = e => { gain = e.target.value/10; $('gainv').textContent = gain.toFixed(1); };
+$('sw').oninput = e => { screenW = +e.target.value; $('swv').textContent = screenW; resize(); };
+
+// ---------- loop ----------
+function loop(t){
+  requestAnimationFrame(loop);
+  track(t);
+  if (!touchMode && t - lastFace > 700) target = rawRest ? {...rawRest} : {...DEFAULT_EYE};
+  const k = .32; eye.x += (target.x-eye.x)*k; eye.y += (target.y-eye.y)*k; eye.z += (target.z-eye.z)*k;
+  applyEye(eye);
+  // reveal: spin the lattice (and its reflection) so the answer can be seen
+  if (revealT){ const a = Math.min(1, (t - revealT)/2500); const r = Math.sin(a*Math.PI) * 1.2; lattice.rotation.y = r; if (mirrorGroup.children[0]) mirrorGroup.children[0].rotation.y = -r; if (a >= 1){ revealT = 0; lattice.rotation.y = 0; if (mirrorGroup.children[0]) mirrorGroup.children[0].rotation.y = 0; } }
+  renderer.render(scene, camera);
+  if (running) $('time').textContent = ((t - levelStart)/1000).toFixed(1);
+  $('toast').style.opacity = t < toastUntil ? 1 : 0;
+  if (running) st.textContent = (touchMode ? 'touch' : fps + 'fps') + ` · ${eye.x.toFixed(0)},${eye.y.toFixed(0)},${eye.z.toFixed(0)}`;
+}
+window.__dbg = { renderer, scene, mirrorGroup, lattice, room, THREE };
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
