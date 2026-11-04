@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>HEADRUSH</title>
+<style>
+  :root{ --bg:#05060a; --fg:#eef1f6; --dim:#8893a4; --accent:#ff5c8a; --cyan:#3de0ff; --panel:rgba(5,6,10,.62);
+    --mono:ui-monospace,"SF Mono",Menlo,monospace; }
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);overflow:hidden;
+    font:14px/1.45 system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;-webkit-user-select:none;user-select:none;touch-action:none}
+  canvas#c{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #flash{position:fixed;inset:0;pointer-events:none;background:var(--accent);opacity:0}
+  #v{position:fixed;left:max(10px,env(safe-area-inset-left,0px));bottom:max(10px,env(safe-area-inset-bottom,0px));
+    width:72px;height:96px;object-fit:cover;border:1px solid #223;border-radius:8px;opacity:.7;transform:scaleX(-1);display:none}
+  #hud{position:fixed;top:0;left:0;right:0;padding:calc(10px + env(safe-area-inset-top,0px)) max(14px,env(safe-area-inset-right,0px)) 0 max(14px,env(safe-area-inset-left,0px));
+    display:flex;justify-content:space-between;align-items:flex-start;gap:10px;pointer-events:none;font-variant-numeric:tabular-nums}
+  #score{font:800 34px var(--mono);letter-spacing:-.02em;line-height:1}
+  .sub{font:11px var(--mono);color:var(--dim)}
+  #lives{display:flex;gap:5px;margin-top:6px}
+  #lives i{width:12px;height:12px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent)}
+  #lives i.off{background:#2a2f3a;box-shadow:none}
+  #spd{text-align:right;font:700 15px var(--mono)}
+  #toast{position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);font-size:30px;font-weight:800;text-align:center;
+    text-shadow:0 2px 18px rgba(0,0,0,.8);pointer-events:none;opacity:0;transition:opacity .2s;color:var(--cyan)}
+  #toast small{display:block;font-size:14px;font-weight:500;color:var(--dim)}
+  .ctl{position:fixed;bottom:0;right:0;padding:0 max(12px,env(safe-area-inset-right,0px)) calc(10px + env(safe-area-inset-bottom,0px)) 0;
+    display:flex;flex-direction:column;gap:6px;align-items:flex-end;font-size:12px}
+  .ctl label,.ctl button.sm{display:flex;gap:8px;align-items:center;background:var(--panel);padding:6px 10px;border-radius:8px;backdrop-filter:blur(6px);color:var(--fg)}
+  .ctl b{font:11px var(--mono);min-width:3.5ch;text-align:right}
+  input[type=range]{width:96px;accent-color:var(--accent)}
+  input[type=checkbox]{accent-color:var(--accent)}
+  button{font:inherit;font-weight:700;padding:13px 24px;border-radius:999px;border:0;background:var(--accent);color:#2a0411}
+  button.sm{font-weight:600;padding:8px 14px;background:var(--panel);color:var(--fg);border:1px solid #2a3140;pointer-events:auto}
+  button:focus-visible{outline:2px solid #fff;outline-offset:2px}
+  .ov{position:fixed;inset:0;display:grid;place-items:center;background:rgba(5,6,10,.9);
+    padding:0 max(16px,env(safe-area-inset-left,0px)) 0 max(16px,env(safe-area-inset-right,0px))}
+  .ov[hidden]{display:none}
+  .ov > div{max-width:320px;text-align:center}
+  .ov h1{font-size:32px;margin:0 0 6px;letter-spacing:.12em;font-style:italic}
+  .ov h2{font-size:22px;margin:0 0 6px}
+  .ov p{color:var(--dim);margin:0 0 18px}
+  #msg{color:var(--dim);font:12px var(--mono);margin-top:14px}
+  #err{color:#ff8a80;font:12px var(--mono);margin-top:8px;white-space:pre-wrap}
+  .big{font:800 44px var(--mono);color:var(--accent);margin:6px 0 4px}
+  .best{font:12px var(--mono);color:var(--dim);margin-bottom:16px}
+  #calib{background:rgba(5,6,10,.55)}
+  .dirs{display:grid;grid-template-columns:repeat(3,56px);grid-template-rows:repeat(3,56px);gap:6px;justify-content:center;margin:14px 0}
+  .dirs i{display:grid;place-items:center;font-size:24px;font-style:normal;border-radius:10px;background:rgba(255,255,255,.06);color:var(--dim);transition:all .2s}
+  .dirs i.on{background:var(--cyan);color:#03222a;transform:scale(1.05)}
+  .dirs i.c{background:none;font-size:12px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="flash"></div>
+<video id="v" playsinline muted autoplay></video>
+
+<div id="hud">
+  <div><div id="score">0</div><div id="lives"></div></div>
+  <div><div id="spd">×1.0</div><div class="sub" id="st">idle</div></div>
+</div>
+<div id="toast"></div>
+
+<div class="ctl">
+  <button class="sm" id="recal">범위 다시 측정</button>
+  <label>화면 폭 <input id="sw" type="range" min="50" max="400" value="68"><b id="swv">68</b>mm</label>
+  <label><input id="inv" type="checkbox"> X 반전</label>
+  <label><input id="touch" type="checkbox"> 터치 모드</label>
+</div>
+
+<div class="ov" id="start"><div>
+  <h1>HEADRUSH</h1>
+  <p>화면 너머로 터널이 달려옵니다. 손 대지 말고 <b>고개로 조종</b>하세요.<br>고개를 옮긴 쪽으로 배가 따라갑니다. 게이트의 구멍으로 통과하면 점수, 벽에 부딪히면 목숨 −1.</p>
+  <button id="go">카메라 시작</button>
+  <div id="msg"></div><div id="err"></div>
+</div></div>
+
+<div class="ov" id="calib" hidden><div>
+  <h2>범위 측정</h2>
+  <p>폰은 그대로 두고, 고개를 <b>왼쪽·오른쪽·위·아래</b>로<br>편하게 움직일 수 있는 만큼 움직여 주세요.</p>
+  <div class="dirs">
+    <i></i><i id="dU">↑</i><i></i>
+    <i id="dL">←</i><i class="c" id="dC">정면</i><i id="dR">→</i>
+    <i></i><i id="dD">↓</i><i></i>
+  </div>
+  <div id="cmsg" class="sub"></div>
+</div></div>
+
+<div class="ov" id="over" hidden><div>
+  <h2>GAME OVER</h2>
+  <div class="big" id="finalScore">0</div>
+  <div class="best" id="best"></div>
+  <button id="again">다시</button>
+</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script type="module">
+// ---------- config ----------
+const IPD_MM = 63, CAM_ABOVE_MM = 8, FOCAL_FACTOR = 0.8;
+const DEFAULT_EYE = {x:0, y:0, z:380};
+const CAL = { x:45, up:35, down:30, timeout:8000 };
+const LIVES = 3;
+
+// ---------- state ----------
+let screenW = 68, screenH = 68 * innerHeight / innerWidth;
+let eye = {...DEFAULT_EYE}, target = {...DEFAULT_EYE}, lastFace = 0;
+let invertX = false, touchMode = false, running = false;
+let obs = null, rest = null, calib = null;
+let score = 0, lives = LIVES, speed = 1, dist = 0, best = 0, toastUntil = 0, invulnUntil = 0;
+try { best = +localStorage.getItem('headrush-best') || 0; } catch(e){}
+
+const $ = id => document.getElementById(id);
+const canvas = $('c'), video = $('v'), st = $('st');
+
+// ---------- three ----------
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true, powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputEncoding = THREE.sRGBEncoding;
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x05060a);
+scene.fog = new THREE.Fog(0x05060a, 1, 10);
+const camera = new THREE.PerspectiveCamera();
+const world = new THREE.Group(); scene.add(world);   // everything in tunnel space; moves toward the viewer
+scene.add(new THREE.AmbientLight(0x6677aa, .5));
+const key = new THREE.PointLight(0xffffff, 1.0, 0, 2); key.position.set(0, 0.3, 0.2); scene.add(key);
+const shipLight = new THREE.PointLight(0x3de0ff, 1.2, 2, 2); scene.add(shipLight);
+
+// tunnel geometry (units: screen widths). Tunnel cross-section = W × H of screen, from z=0 (screen) to z=-LEN
+let LEN = 10, TW = 1, TH = 1, SEG = 0.5;
+let rings = [], gates = [], ship = null, frame = null;
+const gateMat = new THREE.MeshStandardMaterial({color:0x1b2432, roughness:.7, metalness:.3, emissive:0x0a0f18});
+const gateEdge = new THREE.MeshStandardMaterial({color:0xff5c8a, emissive:0xff5c8a, emissiveIntensity:.8, roughness:.4});
+const ringMat = new THREE.LineBasicMaterial({color:0x2f6b80, transparent:true, opacity:.9});
+
+function buildTunnel(){
+  while (world.children.length) world.remove(world.children[0]);
+  rings = []; gates = [];
+  TW = 1; TH = screenH/screenW; SEG = 0.45;
+  // wall planes
+  const wm = new THREE.MeshStandardMaterial({color:0x0b0f16, roughness:.95});
+  const mk = (w,h,x,y,z,rx,ry) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(w,h), wm); m.position.set(x,y,z); m.rotation.set(rx,ry,0); world.add(m); };
+  mk(LEN, TH, -TW/2, 0, -LEN/2, 0,  Math.PI/2);
+  mk(LEN, TH,  TW/2, 0, -LEN/2, 0, -Math.PI/2);
+  mk(TW, LEN, 0, -TH/2, -LEN/2, -Math.PI/2, 0);
+  mk(TW, LEN, 0,  TH/2, -LEN/2,  Math.PI/2, 0);
+  // rings every SEG; they scroll and wrap
+  const rg = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(-TW/2,-TH/2,0), new THREE.Vector3(TW/2,-TH/2,0), new THREE.Vector3(TW/2,TH/2,0), new THREE.Vector3(-TW/2,TH/2,0), new THREE.Vector3(-TW/2,-TH/2,0)]);
+  for (let z = 0; z > -LEN; z -= SEG){ const r = new THREE.Line(rg, ringMat); r.position.z = z; world.add(r); rings.push(r); }
+  // ship: small arrowhead that sits a bit behind the screen plane
+  const sg = new THREE.ConeGeometry(TW*0.035, TW*0.12, 4);
+  sg.rotateX(-Math.PI/2);
+  ship = new THREE.Mesh(sg, new THREE.MeshStandardMaterial({color:0x3de0ff, emissive:0x3de0ff, emissiveIntensity:.9, flatShading:true}));
+  scene.add(ship);
+  // screen-plane frame
+  if (frame) scene.remove(frame);
+  frame = new THREE.Group();
+  const fm = new THREE.MeshStandardMaterial({color:0x1c2634, roughness:.6, metalness:.3}), t = TW*0.02;
+  const fb = (w,h,x,y)=>{ const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,t*2), fm); m.position.set(x,y,-t); frame.add(m); };
+  fb(TW,t,0,TH/2-t/2); fb(TW,t,0,-TH/2+t/2); fb(t,TH,-TW/2+t/2,0); fb(t,TH,TW/2-t/2,0);
+  scene.add(frame);
+}
+
+// ---------- gates ----------
+// a gate is a wall at depth z with one rectangular hole; hole position chosen in reach space
+const rand = (a,b) => a + Math.random()*(b-a);
+function makeGate(z){
+  const g = new THREE.Group(); g.position.z = z;
+  const hw = TW * rand(.22, .34) * Math.max(.55, 1 - (speed-1)*.12);   // hole width shrinks with speed
+  const hh = TH * rand(.22, .34) * Math.max(.55, 1 - (speed-1)*.12);
+  const hx = rand(-TW/2 + hw/2 + TW*.04, TW/2 - hw/2 - TW*.04);
+  const hy = rand(-TH/2 + hh/2 + TH*.04, TH/2 - hh/2 - TH*.04);
+  const d = TW*0.06;
+  const slab = (w,h,x,y) => { if (w<=0||h<=0) return; const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), gateMat); m.position.set(x,y,0); g.add(m); };
+  slab(TW, hy - hh/2 + TH/2, 0, (-TH/2 + hy - hh/2)/2);             // below hole
+  slab(TW, TH/2 - (hy + hh/2), 0, (TH/2 + hy + hh/2)/2);            // above hole
+  slab(hx - hw/2 + TW/2, hh, (-TW/2 + hx - hw/2)/2, hy);             // left of hole
+  slab(TW/2 - (hx + hw/2), hh, (TW/2 + hx + hw/2)/2, hy);            // right of hole
+  // glowing hole edge
+  const e = TW*0.012;
+  const edge = (w,h,x,y) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d*1.1), gateEdge); m.position.set(x,y,0); g.add(m); };
+  edge(hw+e*2, e, hx, hy+hh/2+e/2); edge(hw+e*2, e, hx, hy-hh/2-e/2); edge(e, hh, hx-hw/2-e/2, hy); edge(e, hh, hx+hw/2+e/2, hy);
+  g.userData = {hx, hy, hw, hh, passed:false};
+  world.add(g); gates.push(g);
+}
+function resetGates(){
+  for (const g of gates) world.remove(g); gates = [];
+  for (let z = -3.5; z > -LEN; z -= 2.2) makeGate(z);
+}
+
+// ---------- reach → ship mapping ----------
+// head offset from rest, normalised by calibrated range, maps to ship position inside the tunnel
+function shipFromEye(){
+  const r0 = rest || DEFAULT_EYE;
+  let rx = 70, ry = 50;
+  if (obs && obs.maxX-obs.minX > 60 && obs.maxY-obs.minY > 40){ rx = Math.max(Math.abs(obs.maxX-r0.x), Math.abs(obs.minX-r0.x))*.85; ry = Math.max(Math.abs(obs.maxY-r0.y), Math.abs(obs.minY-r0.y))*.85; }
+  const nx = Math.max(-1, Math.min(1, (eye.x - r0.x)/rx)), ny = Math.max(-1, Math.min(1, (eye.y - r0.y)/ry));
+  return { x: nx * (TW/2 - TW*0.06), y: ny * (TH/2 - TW*0.06) };
+}
+
+function resize(){
+  renderer.setSize(innerWidth, innerHeight, false);
+  screenH = screenW * innerHeight / innerWidth;
+  buildTunnel(); resetGates();
+}
+addEventListener('resize', resize); resize();
+
+function applyEye(e){
+  // scene units are screen widths; eye in mm → divide by screenW
+  const ex = e.x/screenW, ey = e.y/screenW, ez = e.z/screenW;
+  const n = 0.1, f = 60, s = n / ez;
+  camera.projectionMatrix.makePerspective((-TW/2 - ex)*s, (TW/2 - ex)*s, (TH/2 - ey)*s, (-TH/2 - ey)*s, n, f);
+  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  camera.position.set(ex, ey, ez); camera.rotation.set(0,0,0); camera.updateMatrixWorld();
+}
+
+// ---------- One Euro ----------
+class OneEuro{
+  constructor(mc=1.2, b=0.012, dc=1){ this.mc=mc; this.b=b; this.dc=dc; this.x=null; this.dx=0; this.t=null; }
+  static a(c, dt){ const r = 2*Math.PI*c*dt; return r/(r+1); }
+  filter(x, t){
+    if (this.x===null){ this.x=x; this.t=t; return x; }
+    const dt = Math.max(1e-3,(t-this.t)/1000); this.t=t;
+    const dx=(x-this.x)/dt, ad=OneEuro.a(this.dc,dt); this.dx=ad*dx+(1-ad)*this.dx;
+    const a=OneEuro.a(this.mc + this.b*Math.abs(this.dx), dt); this.x=a*x+(1-a)*this.x; return this.x;
+  }
+}
+const fx = new OneEuro(2.0,.03), fy = new OneEuro(2.0,.03), fz = new OneEuro(0.8,.01);
+function eyeFromLandmarks(lm, vw, vh, t){
+  const a = lm[468], b = lm[473]; if (!a || !b) return null;
+  const cx=(a.x+b.x)/2, cy=(a.y+b.y)/2, ipdPx = Math.hypot((a.x-b.x)*vw,(a.y-b.y)*vh);
+  if (ipdPx < 4) return null;
+  const f = FOCAL_FACTOR*Math.max(vw,vh), z = Math.min(1200, Math.max(120, f*IPD_MM/ipdPx));
+  let x = -(cx-0.5)*vw*z/f, y = -(cy-0.5)*vh*z/f + screenH/2 + CAM_ABOVE_MM;
+  if (invertX) x = -x;
+  return { x:fx.filter(x,t), y:fy.filter(y,t), z:fz.filter(z,t) };
+}
+function observe(e){
+  if (!obs){ obs = {minX:e.x, maxX:e.x, minY:e.y, maxY:e.y, minZ:e.z, maxZ:e.z}; return; }
+  obs.minX = Math.min(obs.minX,e.x); obs.maxX = Math.max(obs.maxX,e.x);
+  obs.minY = Math.min(obs.minY,e.y); obs.maxY = Math.max(obs.maxY,e.y);
+  obs.minZ = Math.min(obs.minZ,e.z); obs.maxZ = Math.max(obs.maxZ,e.z);
+}
+
+// ---------- calibration ----------
+function startCalibration(){
+  obs = null; rest = null; running = false;
+  calib = { t0: performance.now(), L:false, R:false, U:false, D:false, restSamples:[] };
+  for (const k of ['dL','dR','dU','dD','dC']) $(k).classList.remove('on');
+  $('over').hidden = true; $('calib').hidden = false;
+}
+function stepCalibration(t){
+  const c = calib, fresh = t - lastFace < 300;
+  if (!rest){
+    if (fresh) c.restSamples.push({...target});
+    $('cmsg').textContent = fresh ? '정면을 보고 잠시 멈춰 주세요…' : '얼굴을 카메라에 맞춰 주세요';
+    if (c.restSamples.length >= 20){
+      const s = c.restSamples.slice(-12);
+      rest = { x: s.reduce((a,b)=>a+b.x,0)/s.length, y: s.reduce((a,b)=>a+b.y,0)/s.length, z: s.reduce((a,b)=>a+b.z,0)/s.length };
+      obs = null; observe(rest); c.t0 = t; $('dC').classList.add('on');
+    }
+    return;
+  }
+  if (fresh){
+    observe(target);
+    if (target.x < rest.x - CAL.x) c.L = true;  if (target.x > rest.x + CAL.x) c.R = true;
+    if (target.y > rest.y + CAL.up) c.U = true; if (target.y < rest.y - CAL.down) c.D = true;
+  }
+  $('dL').classList.toggle('on', c.L); $('dR').classList.toggle('on', c.R);
+  $('dU').classList.toggle('on', c.U); $('dD').classList.toggle('on', c.D);
+  const n = [c.L,c.R,c.U,c.D].filter(Boolean).length, left = Math.max(0, (CAL.timeout - (t - c.t0))/1000);
+  $('cmsg').textContent = `${n}/4 · 남은 시간 ${left.toFixed(0)}s · 범위 ${(obs.maxX-obs.minX).toFixed(0)}×${(obs.maxY-obs.minY).toFixed(0)}mm`;
+  if (n === 4 || t - c.t0 > CAL.timeout){ calib = null; $('calib').hidden = true; startRun(); }
+}
+
+// ---------- game ----------
+function startRun(){
+  score = 0; lives = LIVES; speed = 1; dist = 0; invulnUntil = performance.now() + 1500;
+  resetGates(); updateHud(); running = true;
+  toast('GO', '고개로 조종');
+}
+function updateHud(){
+  $('score').textContent = score;
+  $('lives').innerHTML = Array.from({length:LIVES}, (_,i) => `<i class="${i < lives ? '' : 'off'}"></i>`).join('');
+  $('spd').textContent = '×' + speed.toFixed(1);
+}
+function toast(big, small, ms=900){ $('toast').innerHTML = big + (small ? '<small>'+small+'</small>' : ''); toastUntil = performance.now() + ms; }
+function flash(){ const f = $('flash'); f.style.transition = 'none'; f.style.opacity = .55; requestAnimationFrame(()=>{ f.style.transition = 'opacity .45s'; f.style.opacity = 0; }); }
+function gameOver(){
+  running = false;
+  if (score > best){ best = score; try{ localStorage.setItem('headrush-best', best); }catch(e){} }
+  $('finalScore').textContent = score; $('best').textContent = 'BEST ' + best;
+  setTimeout(() => { $('over').hidden = false; }, 600);
+}
+
+// ---------- audio ----------
+let ac = null;
+function blip(freq=880, dur=.12, type='triangle', gain=.16){
+  if (!ac) return; const o = ac.createOscillator(), g = ac.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, ac.currentTime); o.frequency.exponentialRampToValueAtTime(freq*1.4, ac.currentTime+dur);
+  g.gain.setValueAtTime(gain, ac.currentTime); g.gain.exponentialRampToValueAtTime(.001, ac.currentTime+dur);
+  o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime+dur);
+}
+function thud(){ if (!ac) return; const o = ac.createOscillator(), g = ac.createGain(); o.type='sawtooth'; o.frequency.setValueAtTime(140, ac.currentTime); o.frequency.exponentialRampToValueAtTime(40, ac.currentTime+.3);
+  g.gain.setValueAtTime(.3, ac.currentTime); g.gain.exponentialRampToValueAtTime(.001, ac.currentTime+.3); o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime+.3); }
+
+// ---------- camera / tracking ----------
+let landmarker = null, lastVT = -1, frames = 0, fpsT = performance.now(), fps = 0;
+async function startCamera(){
+  const err = $('err'), msg = $('msg'); err.textContent = '';
+  const say = t => { msg.textContent = t; st.textContent = t; };
+  try{ ac = ac || new (window.AudioContext||window.webkitAudioContext)(); ac.resume(); }catch(e){}
+  if (!isSecureContext || !navigator.mediaDevices?.getUserMedia){ err.textContent = '카메라는 https 주소에서만 열립니다.'; return; }
+  try{
+    $('go').disabled = true; say('카메라 여는 중…');
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:640}, height:{ideal:480}}, audio:false});
+    video.srcObject = stream; await video.play(); video.style.display = 'block';
+    say('트래커 불러오는 중 (~5 MB)…');
+    const mod = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
+    const mp = mod.FaceLandmarker ? mod : mod.default;
+    const vision = await mp.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+    const make = delegate => mp.FaceLandmarker.createFromOptions(vision, {
+      baseOptions:{ modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task', delegate },
+      runningMode:'VIDEO', numFaces:1 });
+    try { landmarker = await make('GPU'); } catch(e){ say('GPU 실패, CPU로…'); landmarker = await make('CPU'); }
+    $('start').hidden = true; st.textContent = 'tracking';
+    startCalibration();
+  }catch(e){ $('go').disabled = false; say('idle'); err.textContent = (e && e.message) ? e.message : String(e); }
+}
+$('go').onclick = startCamera;
+function track(t){
+  if (!landmarker || touchMode || video.readyState < 2 || video.currentTime === lastVT) return;
+  lastVT = video.currentTime;
+  const res = landmarker.detectForVideo(video, t);
+  frames++; if (t - fpsT > 1000){ fps = frames; frames = 0; fpsT = t; }
+  const lm = res.faceLandmarks && res.faceLandmarks[0];
+  if (lm){ const e = eyeFromLandmarks(lm, video.videoWidth, video.videoHeight, t); if (e){ target = e; lastFace = t; } }
+}
+
+// ---------- controls ----------
+addEventListener('pointermove', ev => {
+  if (!touchMode) return;
+  target = { x:(ev.clientX/innerWidth-.5)*160, y:-(ev.clientY/innerHeight-.5)*120, z:340 };
+  lastFace = performance.now();
+});
+$('touch').onchange = e => { touchMode = e.target.checked;
+  if (touchMode){
+    $('start').hidden = true; $('calib').hidden = true; calib = null;
+    try{ ac = ac || new (window.AudioContext||window.webkitAudioContext)(); }catch(_){}
+    rest = {x:0, y:0, z:340}; obs = {minX:-80, maxX:80, minY:-60, maxY:60, minZ:330, maxZ:350};
+    startRun();
+  } else if (landmarker) startCalibration();
+  st.textContent = touchMode ? 'touch' : (landmarker ? 'tracking' : 'idle'); };
+$('inv').onchange = e => { invertX = e.target.checked; if (landmarker && !touchMode) startCalibration(); };
+$('sw').oninput = e => { screenW = +e.target.value; $('swv').textContent = screenW; resize(); if (running) startRun(); };
+$('recal').onclick = () => { if (landmarker && !touchMode) startCalibration(); };
+$('again').onclick = () => { $('over').hidden = true; startRun(); };
+
+// ---------- loop ----------
+let lastT = performance.now();
+const SHIP_Z = -0.35;
+function loop(t){
+  requestAnimationFrame(loop);
+  const dt = Math.min(50, t - lastT)/1000; lastT = t;
+  track(t);
+  if (t - lastFace > 600) target = rest ? {...rest} : {...DEFAULT_EYE};
+  const k = 0.4; eye.x += (target.x-eye.x)*k; eye.y += (target.y-eye.y)*k; eye.z += (target.z-eye.z)*k;
+  applyEye(eye);
+  if (calib) stepCalibration(t);
+
+  // ship follows head
+  const sp = shipFromEye();
+  if (ship){ ship.position.x += (sp.x - ship.position.x)*.45; ship.position.y += (sp.y - ship.position.y)*.45; ship.position.z = SHIP_Z;
+    ship.rotation.z = -(sp.x - ship.position.x)*6; ship.rotation.x = (sp.y - ship.position.y)*6;
+    shipLight.position.copy(ship.position); shipLight.position.z += .1; }
+
+  if (running){
+    speed = Math.min(4, 1 + dist*0.012);
+    const v = 2.4 * speed * dt;            // tunnel scroll per frame (screen widths)
+    dist += v;
+    for (const r of rings){ r.position.z += v; if (r.position.z > 0) r.position.z -= LEN; }
+    for (const g of gates){
+      g.position.z += v;
+      if (!g.userData.passed && g.position.z >= SHIP_Z){
+        g.userData.passed = true;
+        const u = g.userData, inHole = Math.abs(ship.position.x - u.hx) < u.hw/2 - TW*0.02 && Math.abs(ship.position.y - u.hy) < u.hh/2 - TW*0.02;
+        if (inHole){ score++; blip(700 + Math.min(score,20)*30, .1); if (score % 10 === 0) toast(score, '×' + speed.toFixed(1)); }
+        else if (t > invulnUntil){ lives--; flash(); thud(); invulnUntil = t + 1200; if (lives <= 0){ updateHud(); gameOver(); return; } }
+        updateHud();
+      }
+      if (g.position.z > 1.5){ world.remove(g); gates.splice(gates.indexOf(g),1); makeGate(g.position.z - LEN + rand(-.3,.3)); }
+    }
+    $('spd').textContent = '×' + speed.toFixed(1);
+  }
+  $('toast').style.opacity = t < toastUntil ? 1 : 0;
+  renderer.render(scene, camera);
+  if (running || calib) st.textContent = (touchMode ? 'touch' : fps + 'fps') + ` · ${eye.x.toFixed(0)},${eye.y.toFixed(0)},${eye.z.toFixed(0)}`;
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
