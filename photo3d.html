@@ -349,21 +349,26 @@ async function generate3D(){
   }catch(e){ log('오류: ' + (e && e.message ? e.message : JSON.stringify(e))); }
   $('genrun').disabled = false;
 }
-function showModel(url){
-  return new Promise((res, rej) => {
-    new THREE.GLTFLoader().load(url, g => {
-      if (model3d) scene.remove(model3d);
-      model3d = g.scene;
-      const box = new THREE.Box3().setFromObject(model3d), size = box.getSize(new THREE.Vector3()), ctr = box.getCenter(new THREE.Vector3());
-      const W = screenW, H = screenH, s = Math.min(W, H) * 0.75 / Math.max(size.x, size.y, size.z);
-      model3d.position.sub(ctr).multiplyScalar(s); model3d.scale.setScalar(s);
-      const holder = new THREE.Group(); holder.add(model3d); holder.position.z = -W * 0.55; model3d = holder;
-      scene.add(model3d);
-      if (!scene.getObjectByName('mlight')){ const l = new THREE.DirectionalLight(0xffffff, 1.2); l.name = 'mlight'; l.position.set(1, 2, 3); scene.add(l); scene.add(new THREE.AmbientLight(0xffffff, .7)); }
-      if (photo){ photo.position.z = -W * 1.3; }
-      res();
-    }, undefined, e => rej(new Error('glb 로드 실패 (' + (e && e.message || e) + ')')));
-  });
+async function showModel(url){
+  let buf = null, lastErr = '';
+  for (const u of [url, url.split('?')[0]]){
+    try { const r = await fetch(u); if (!r.ok){ lastErr = `HTTP ${r.status} ${(await r.text()).slice(0,120)}`; continue; } buf = await r.arrayBuffer(); break; }
+    catch(e){ lastErr = e.message; }
+  }
+  if (!buf) throw new Error('glb 다운로드 실패: ' + lastErr + ' · ' + url.slice(0, 120));
+  log(`glb ${(buf.byteLength/1e6).toFixed(1)}MB 파싱…`);
+  const g = await new Promise((res, rej) => new THREE.GLTFLoader().parse(buf, '', res, e => rej(new Error('glb 파싱 실패: ' + (e && e.message || e)))));
+  if (model3d) scene.remove(model3d);
+  model3d = g.scene;
+  const box = new THREE.Box3().setFromObject(model3d), size = box.getSize(new THREE.Vector3()), ctr = box.getCenter(new THREE.Vector3());
+  const W = screenW, H = screenH, sc = Math.min(W, H) * 0.75 / Math.max(size.x, size.y, size.z);
+  model3d.position.sub(ctr).multiplyScalar(sc); model3d.scale.setScalar(sc);
+  // untextured meshes come in plain white; give them a readable material
+  model3d.traverse(o => { if (o.isMesh && (!o.material.map)) { o.material = new THREE.MeshStandardMaterial({color:0xd9d3c7, roughness:.65, metalness:.05}); } });
+  const holder = new THREE.Group(); holder.add(model3d); holder.position.z = -W * 0.55; model3d = holder;
+  scene.add(model3d);
+  if (!scene.getObjectByName('mlight')){ const l = new THREE.DirectionalLight(0xffffff, 1.2); l.name = 'mlight'; l.position.set(1, 2, 3); scene.add(l); const l2 = new THREE.DirectionalLight(0x8899ff, .5); l2.position.set(-2, -1, 1); scene.add(l2); scene.add(new THREE.AmbientLight(0xffffff, .6)); }
+  if (photo){ photo.position.z = -W * 1.3; }
 }
 async function showApi(){
   const tok = $('hftok').value.trim(); $('genlog').textContent = '';
