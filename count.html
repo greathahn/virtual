@@ -59,9 +59,15 @@
 </div>
 <div id="answers"></div>
 
+<div class="ov" id="result" hidden><div>
+  <h1 style="font-size:22px;letter-spacing:.08em">ROUND CLEAR</h1>
+  <div id="resScore" style="font:900 44px var(--mono);color:var(--accent);margin:6px 0 2px">0점</div>
+  <div id="resSub" class="sub" style="margin-bottom:18px">0/10</div>
+  <button class="big" id="again">다시</button>
+</div></div>
 <div class="ov" id="start"><div>
   <h1>LATTICE</h1>
-  <p>창 너머 격자에 블록이 몇 개 들어 있을까요? 정면에선 뒤가 안 보입니다.<br>고개를 움직여 옆에서 들여다보고, 뒷벽의 <b>거울</b>로 뒤쪽을 확인하세요.</p>
+  <p>창 너머 격자에 블록이 몇 개 들어 있을까요? 한 라운드 10문제. 정면에선 뒤가 안 보입니다.<br>고개를 움직여 옆에서 들여다보고, 뒷벽의 <b>거울</b>로 뒤쪽을 확인하세요.</p>
   <div class="btns"><button class="big" id="go">카메라 시작</button><button class="big alt" id="goTouch">터치로 해보기</button></div>
   <div id="msg"></div><div id="err"></div>
 </div></div>
@@ -73,7 +79,10 @@ const canvas = $('c'), video = $('v'), st = $('st');
 const IPD_MM = 63, CAM_ABOVE_MM = 8, FOCAL_FACTOR = 0.8, DEFAULT_EYE = {x:0, y:0, z:380};
 let screenW = 68, screenH = 68 * innerHeight / innerWidth;
 let eye = {...DEFAULT_EYE}, target = {...DEFAULT_EYE}, lastFace = 0, rawRest = null, gain = 1.8, invertX = false, touchMode = false;
-let level = 1, score = 0, running = false, levelStart = 0, answer = 0, toastUntil = 0;
+let level = 1, score = 0, running = false, levelStart = 0, answer = 0, toastUntil = 0, correct = 0, totalTime = 0;
+const ROUND = 10;
+const PALETTE = [ {name:'노란', hex:0xffb347}, {name:'파란', hex:0x4fc3f7}, {name:'분홍', hex:0xff6fa8}, {name:'초록', hex:0x7ee787} ];
+let qColor = null;   // null = count all blocks, else a palette index
 
 // ---------- three ----------
 const renderer = new THREE.WebGLRenderer({canvas, antialias:true, stencil:true, powerPreference:'high-performance'});
@@ -128,7 +137,7 @@ function buildRoom(){
 
 // ---------- lattice ----------
 let N = 3, cells = [];
-const cubeMat = new THREE.MeshStandardMaterial({color:0xffb347, roughness:.55, metalness:.05});
+const cubeMats = PALETTE.map(c => new THREE.MeshStandardMaterial({color:c.hex, roughness:.55, metalness:.05}));
 const edgeMat = new THREE.LineBasicMaterial({color:0x2a1700, transparent:true, opacity:.6});
 const cageMat = new THREE.LineBasicMaterial({color:0x5b6b85, transparent:true, opacity:.5});
 function flipWinding(g){ const idx = g.index; if (idx){ const a = idx.array; for (let i=0;i<a.length;i+=3){ const t = a[i+1]; a[i+1] = a[i+2]; a[i+2] = t; } idx.needsUpdate = true; } return g; }
@@ -152,12 +161,21 @@ function buildLattice(){
     cells = Array(total).fill(false); for (const i of idx) cells[i] = true; count = want;
     tries++;
   } while (tries < 50 && visibleFromFront() >= count);   // at least one block must be hidden from straight on
-  answer = count;
+  // colours: more hues as the round goes on; question is either all blocks or one colour
+  const nColors = level <= 3 ? 2 : (level <= 6 ? 3 : 4);
+  const colorOf = Array(total).fill(-1);
+  const filled = []; for (let i=0;i<total;i++) if (cells[i]) filled.push(i);
+  const perColor = Array(nColors).fill(0);
+  for (const i of filled){ const c = Math.floor(Math.random()*nColors); colorOf[i] = c; perColor[c]++; }
+  qColor = (level <= 2 || Math.random() < 0.35) ? null : Math.floor(Math.random()*nColors);
+  if (qColor !== null && perColor[qColor] < 2) qColor = null;
+  answer = qColor === null ? count : perColor[qColor];
+  $('q').innerHTML = qColor === null ? '블록이 모두 몇 개?' : `<i style="display:inline-block;width:14px;height:14px;border-radius:3px;vertical-align:-2px;margin-right:6px;background:#${PALETTE[qColor].hex.toString(16).padStart(6,'0')}"></i>${PALETTE[qColor].name} 블록이 몇 개?`;
   const geo = new THREE.BoxGeometry(cube, cube, cube), eg = new THREE.EdgesGeometry(geo);
   for (let i=0;i<total;i++){
     if (!cells[i]) continue;
     const x = i % N, y = Math.floor(i / N) % N, z = Math.floor(i / (N*N));
-    const m = new THREE.Mesh(geo, cubeMat); m.position.set(origin.x + x*s, origin.y + y*s, origin.z + z*s);
+    const m = new THREE.Mesh(geo, cubeMats[colorOf[i]]); m.position.set(origin.x + x*s, origin.y + y*s, origin.z + z*s);
     m.add(new THREE.LineSegments(eg, edgeMat)); lattice.add(m);
   }
   // mirrored copy (virtual image behind the mirror plane) — visible only through the mirror stencil
@@ -191,12 +209,12 @@ function buildLattice(){
     }
     return seen.size;
   }
-  $('lv').textContent = `LEVEL ${level} · ${N}×${N}×${N}`;
+  $('lv').textContent = `${level}/${ROUND} · ${N}×${N}×${N}`;
   makeAnswers(); levelStart = performance.now(); running = true;
 }
 function makeAnswers(){
   const opts = new Set([answer]); const spread = N === 3 ? 3 : 4;
-  while (opts.size < 4){ const v = answer + (Math.floor(Math.random()*(spread*2+1)) - spread); if (v >= 1 && v <= N*N*N) opts.add(v); }
+  while (opts.size < 4){ const v = answer + (Math.floor(Math.random()*(spread*2+1)) - spread); if (v >= 0 && v <= N*N*N) opts.add(v); }
   const arr = [...opts].sort((a,b)=>a-b);
   $('answers').innerHTML = arr.map(v => `<button data-v="${v}">${v}</button>`).join('');
   for (const b of $('answers').children) b.onclick = () => pick(+b.dataset.v, b);
@@ -205,11 +223,18 @@ function pick(v, btn){
   if (!running) return; running = false;
   const sec = (performance.now() - levelStart)/1000;
   for (const b of $('answers').children){ b.disabled = true; if (+b.dataset.v === answer) b.classList.add('ok'); }
-  if (v === answer){ const pts = Math.max(10, Math.round(100 - sec*2)); score += pts; toast('정답!', `+${pts} · ${sec.toFixed(1)}s`); blip(880,.15); blip(1320,.25,'sine',.1);
-    setTimeout(() => { level++; if (level >= 4) N = 4; buildLattice(); }, 1300); }
-  else { btn.classList.add('no'); toast(`${answer}개`, '틀렸어요 — 보여드릴게요'); blip(160,.3,'sawtooth',.2); reveal(); setTimeout(() => { buildLattice(); }, 3200); }
+  totalTime += sec;
+  const next = () => { level++; if (level > ROUND) return finishRound(); N = level >= 7 ? 4 : 3; buildLattice(); };
+  if (v === answer){ correct++; const pts = Math.max(10, Math.round(100 - sec*2)); score += pts; toast('정답!', `+${pts} · ${sec.toFixed(1)}s`); blip(880,.15); blip(1320,.25,'sine',.1); setTimeout(next, 1300); }
+  else { btn.classList.add('no'); toast(`${answer}개`, '틀렸어요 — 보여드릴게요'); blip(160,.3,'sawtooth',.2); reveal(); setTimeout(next, 3200); }
   $('score').textContent = score + '점';
 }
+function finishRound(){
+  running = false; $('answers').innerHTML = '';
+  $('resScore').textContent = score + '점'; $('resSub').textContent = `${correct}/${ROUND} 정답 · 평균 ${(totalTime/ROUND).toFixed(1)}s`;
+  $('result').hidden = false;
+}
+function startRound(){ level = 1; score = 0; correct = 0; totalTime = 0; N = 3; $('score').textContent = '0점'; $('result').hidden = true; buildLattice(); }
 let revealT = 0;
 function reveal(){ revealT = performance.now(); }
 function toast(big, small, ms=1200){ $('toast').innerHTML = big + (small ? '<small>'+small+'</small>' : ''); toastUntil = performance.now() + ms; }
@@ -252,7 +277,7 @@ async function startCamera(){
     const vision = await mp.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
     const make = d => mp.FaceLandmarker.createFromOptions(vision, { baseOptions:{ modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task', delegate:d }, runningMode:'VIDEO', numFaces:1 });
     try { landmarker = await make('GPU'); } catch(e){ landmarker = await make('CPU'); }
-    $('start').hidden = true; st.textContent = 'tracking'; buildLattice();
+    $('start').hidden = true; st.textContent = 'tracking'; startRound();
   }catch(e){ $('go').disabled = false; say('idle'); err.textContent = (e && e.message) ? e.message : String(e); }
 }
 function track(t){
@@ -280,8 +305,9 @@ function blip(freq=880, dur=.12, type='triangle', gain=.16){
 
 // ---------- controls ----------
 $('go').onclick = startCamera;
+$('again').onclick = startRound;
 $('goTouch').onclick = () => { $('touch').checked = true; $('touch').dispatchEvent(new Event('change')); };
-$('touch').onchange = e => { touchMode = e.target.checked; if (touchMode){ $('start').hidden = true; try{ ac = ac || new (window.AudioContext||window.webkitAudioContext)(); }catch(_){} if (!running) buildLattice(); } st.textContent = touchMode ? 'touch' : (landmarker ? 'tracking' : 'idle'); };
+$('touch').onchange = e => { touchMode = e.target.checked; if (touchMode){ $('start').hidden = true; try{ ac = ac || new (window.AudioContext||window.webkitAudioContext)(); }catch(_){} if (!running) startRound(); } st.textContent = touchMode ? 'touch' : (landmarker ? 'tracking' : 'idle'); };
 $('inv').onchange = e => { invertX = e.target.checked; rawRest = null; restSamples = []; };
 $('gain').oninput = e => { gain = e.target.value/10; $('gainv').textContent = gain.toFixed(1); };
 $('sw').oninput = e => { screenW = +e.target.value; $('swv').textContent = screenW; resize(); };
