@@ -65,8 +65,8 @@
       <input id="hftok" type="password" placeholder="hf_..." style="font:13px var(--mono);padding:9px;border-radius:8px;border:1px solid #2a3140;background:#111;color:var(--fg)"></label>
     <label style="display:grid;gap:4px;font-size:12px;color:var(--dim)">모델
       <select id="hfmodel" style="font:13px system-ui;padding:9px;border-radius:8px;border:1px solid #2a3140;background:#111;color:var(--fg)">
-        <option value="tencent/Hunyuan3D-2|tex">tencent/Hunyuan3D-2 (형상+텍스처, 2~3분)</option>
-        <option value="tencent/Hunyuan3D-2">tencent/Hunyuan3D-2 (형상만, 흰색, ~1분)</option>
+        <option value="tencent/Hunyuan3D-2">tencent/Hunyuan3D-2 (형상 + 사진 투영 색, ~1분)</option>
+        <option value="tencent/Hunyuan3D-2|tex">tencent/Hunyuan3D-2 (텍스처 생성 — 이 스페이스에선 실패)</option>
         <option value="tencent/Hunyuan3D-2mini-Turbo">tencent/Hunyuan3D-2mini-Turbo (빠름)</option>
         <option value="stabilityai/TripoSR">stabilityai/TripoSR (현재 Runtime error)</option>
         <option value="custom">직접 입력…</option>
@@ -210,12 +210,19 @@ function loadImage(src){ return new Promise((res, rej) => { const im = new Image
 class OneEuro{ constructor(mc=1.2,b=.012,dc=1){this.mc=mc;this.b=b;this.dc=dc;this.x=null;this.dx=0;this.t=null;} static a(c,dt){const r=2*Math.PI*c*dt;return r/(r+1);}
   filter(x,t){ if(this.x===null){this.x=x;this.t=t;return x;} const dt=Math.max(1e-3,(t-this.t)/1000); this.t=t; const dx=(x-this.x)/dt, ad=OneEuro.a(this.dc,dt); this.dx=ad*dx+(1-ad)*this.dx; const a=OneEuro.a(this.mc+this.b*Math.abs(this.dx),dt); this.x=a*x+(1-a)*this.x; return this.x; } }
 const fx = new OneEuro(1.5,.02), fy = new OneEuro(1.5,.02), fz = new OneEuro(.8,.01);
-let landmarker = null, lastVT = -1, frames = 0, fpsT = performance.now(), fps = 0;
+let landmarker = null, lastVT = -1, frames = 0, fpsT = performance.now(), fps = 0, mpMod = null, mpVision = null;
 function eyeFromLandmarks(lm, vw, vh, t){
   const a = lm[468], b = lm[473]; if (!a||!b) return null;
   const cx=(a.x+b.x)/2, cy=(a.y+b.y)/2, ipdPx=Math.hypot((a.x-b.x)*vw,(a.y-b.y)*vh); if (ipdPx<4) return null;
   const f=FOCAL_FACTOR*Math.max(vw,vh), z=Math.min(1200,Math.max(120,f*IPD_MM/ipdPx));
   return { x:fx.filter(-(cx-.5)*vw*z/f,t), y:fy.filter(-(cy-.5)*vh*z/f+screenH/2+CAM_ABOVE_MM,t), z:fz.filter(z,t) };
+}
+async function loadMp(){
+  if (mpMod) return { mp: mpMod, vision: mpVision };
+  const mod = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
+  mpMod = mod.FaceLandmarker ? mod : mod.default;
+  mpVision = await mpMod.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+  return { mp: mpMod, vision: mpVision };
 }
 async function startFace(say){
   if (landmarker) return;
@@ -224,9 +231,7 @@ async function startFace(say){
   const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:640}, height:{ideal:480}}, audio:false});
   video.srcObject = stream; await video.play(); video.style.display = 'block';
   say('얼굴 트래커 불러오는 중…');
-  const mod = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
-  const mp = mod.FaceLandmarker ? mod : mod.default;
-  const vision = await mp.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+  const { mp, vision } = await loadMp();
   const make = d => mp.FaceLandmarker.createFromOptions(vision, { baseOptions:{ modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task', delegate:d }, runningMode:'VIDEO', numFaces:1 });
   try { landmarker = await make('GPU'); } catch(e){ landmarker = await make('CPU'); }
 }
@@ -350,6 +355,37 @@ async function generate3D(){
   }catch(e){ log('오류: ' + (e && e.message ? e.message : JSON.stringify(e))); }
   $('genrun').disabled = false;
 }
+let segmenter = null;
+async function subjectBox(img){
+  // normalised [x0,y0,x1,y1] of the foreground subject in the photo (top-left origin)
+  try{
+    const { mp, vision } = await loadMp();
+    segmenter = segmenter || await mp.ImageSegmenter.createFromOptions(vision, { baseOptions:{ modelAssetPath:'https://storage.googleapis.com/mediapipe-models/image_segmenter/deeplab_v3/float32/1/deeplab_v3.tflite' }, runningMode:'IMAGE', outputCategoryMask:true, outputConfidenceMasks:false });
+    const c = fitImage(img, 512), res = segmenter.segment(c), m = res.categoryMask, d = m.getAsUint8Array(), w = m.width, h = m.height;
+    let x0 = w, y0 = h, x1 = -1, y1 = -1, n = 0;
+    for (let y=0;y<h;y++) for (let x=0;x<w;x++){ if (d[y*w+x] !== 0){ n++; if (x<x0) x0=x; if (x>x1) x1=x; if (y<y0) y0=y; if (y>y1) y1=y; } }
+    res.close();
+    if (n < w*h*0.01) return null;
+    return [x0/w, y0/h, (x1+1)/w, (y1+1)/h];
+  }catch(e){ log('분할 실패: ' + (e.message||e)); return null; }
+}
+function projectPhoto(root, box, bb){
+  // planar projection from the front: mesh bbox (x,y) → subject box in the photo
+  const [bx0, by0, bx1, by1] = bb, sz = box.getSize(new THREE.Vector3());
+  const v = new THREE.Vector3();
+  root.updateMatrixWorld(true);
+  root.traverse(o => {
+    if (!o.isMesh) return;
+    const pos = o.geometry.attributes.position, uv = new Float32Array(pos.count*2);
+    for (let i=0;i<pos.count;i++){
+      v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+      const u = (v.x - box.min.x)/sz.x, t = (v.y - box.min.y)/sz.y;          // 0..1 across the mesh, t: bottom→top
+      uv[i*2] = bx0 + u*(bx1-bx0); uv[i*2+1] = 1 - (by1 - t*(by1-by0));       // into photo UV (v up)
+    }
+    o.geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    o.material = new THREE.MeshStandardMaterial({ map: photoTex, roughness:.75, metalness:0, side: THREE.DoubleSide });
+  });
+}
 async function showModel(url){
   let buf = null, lastErr = '';
   for (const u of [url, url.split('?')[0]]){
@@ -370,6 +406,8 @@ async function showModel(url){
     const tex = o.material && o.material.map;
     o.material = new THREE.MeshStandardMaterial({ map: tex || null, color: tex ? 0xffffff : 0xd9d3c7, roughness:.7, metalness:.02, side: THREE.DoubleSide });
     if (tex) tex.encoding = THREE.sRGBEncoding; });
+  let untextured = true; model3d.traverse(o => { if (o.isMesh && o.material.map) untextured = false; });
+  if (untextured && photoTex && lastImageEl){ log('피사체 분할 + 사진 투영…'); const bb = (await subjectBox(lastImageEl)) || [0,0,1,1]; model3d.position.set(0,0,0); model3d.scale.setScalar(1); projectPhoto(model3d, box, bb); model3d.position.sub(ctr).multiplyScalar(sc); model3d.scale.setScalar(sc); }
   const holder = new THREE.Group(); holder.add(model3d); holder.position.z = -W * 0.7; model3d = holder;
   scene.add(model3d); $('back2photo').style.display = '';
   if (!scene.getObjectByName('mlight')){ const l = new THREE.DirectionalLight(0xffffff, 1.2); l.name = 'mlight'; l.position.set(1, 2, 3); scene.add(l); const l2 = new THREE.DirectionalLight(0x8899ff, .5); l2.position.set(-2, -1, 1); scene.add(l2); scene.add(new THREE.AmbientLight(0xffffff, .6)); }
