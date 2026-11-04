@@ -64,6 +64,7 @@
 
 <div class="ctl">
   <button class="sm" id="recal">범위 다시 측정</button>
+  <label>감도 <input id="gain" type="range" min="10" max="30" value="13"><b id="gainv">1.3</b>×</label>
   <label>화면 폭 <input id="sw" type="range" min="50" max="400" value="68"><b id="swv">68</b>mm</label>
   <label><input id="inv" type="checkbox"> X 반전</label>
   <label><input id="touch" type="checkbox"> 터치 모드</label>
@@ -84,6 +85,7 @@
     <i id="dL">←</i><i class="c" id="dC">정면</i><i id="dR">→</i>
     <i></i><i id="dD">↓</i><i></i>
   </div>
+  <button class="sm" id="skipCal" style="display:inline-flex;margin-bottom:10px">건너뛰기</button>
   <div id="cmsg" class="sub"></div>
 </div></div>
 
@@ -99,14 +101,14 @@
 // ---------- config ----------
 const IPD_MM = 63, CAM_ABOVE_MM = 8, FOCAL_FACTOR = 0.8;
 const DEFAULT_EYE = {x:0, y:0, z:380};
-const CAL = { x:45, up:35, down:30, timeout:8000 };
-const LIVES = 3;
+const CAL = { x:25, up:20, down:20, timeout:6000, floor:{x:45, up:35, down:30} };
+const LIVES = 5;
 
 // ---------- state ----------
 let screenW = 68, screenH = 68 * innerHeight / innerWidth;
 let eye = {...DEFAULT_EYE}, target = {...DEFAULT_EYE}, lastFace = 0;
 let invertX = false, touchMode = false, running = false;
-let obs = null, rest = null, calib = null;
+let obs = null, rest = null, calib = null, rawRest = null, gain = 1.3;
 let score = 0, lives = LIVES, speed = 1, dist = 0, best = 0, toastUntil = 0, invulnUntil = 0;
 try { best = +localStorage.getItem('headrush-best') || 0; } catch(e){}
 
@@ -169,8 +171,8 @@ function buildTunnel(){
 const rand = (a,b) => a + Math.random()*(b-a);
 function makeGate(z){
   const g = new THREE.Group(); g.position.z = z;
-  const hw = TW * rand(.22, .34) * Math.max(.55, 1 - (speed-1)*.12);   // hole width shrinks with speed
-  const hh = TH * rand(.22, .34) * Math.max(.55, 1 - (speed-1)*.12);
+  const hw = TW * rand(.34, .50) * Math.max(.6, 1 - (speed-1)*.1);   // hole width shrinks with speed
+  const hh = TH * rand(.34, .50) * Math.max(.6, 1 - (speed-1)*.1);
   const hx = rand(-TW/2 + hw/2 + TW*.04, TW/2 - hw/2 - TW*.04);
   const hy = rand(-TH/2 + hh/2 + TH*.04, TH/2 - hh/2 - TH*.04);
   const d = TW*0.06;
@@ -192,7 +194,7 @@ function makeGate(z){
 }
 function resetGates(){
   for (const g of gates) world.remove(g); gates = [];
-  for (let z = -5; z > -LEN; z -= 3.0) makeGate(z);
+  for (let z = -6; z > -LEN; z -= 3.5) makeGate(z);
 }
 
 // ---------- reach → ship mapping ----------
@@ -242,6 +244,7 @@ function eyeFromLandmarks(lm, vw, vh, t){
   if (invertX) x = -x;
   return { x:fx.filter(x,t), y:fy.filter(y,t), z:fz.filter(z,t) };
 }
+function amplify(e){ if (!rawRest) return e; return { x: rawRest.x + (e.x-rawRest.x)*gain, y: rawRest.y + (e.y-rawRest.y)*gain, z: e.z }; }
 function observe(e){
   if (!obs){ obs = {minX:e.x, maxX:e.x, minY:e.y, maxY:e.y, minZ:e.z, maxZ:e.z}; return; }
   obs.minX = Math.min(obs.minX,e.x); obs.maxX = Math.max(obs.maxX,e.x);
@@ -251,20 +254,32 @@ function observe(e){
 
 // ---------- calibration ----------
 function startCalibration(){
-  obs = null; rest = null; running = false;
-  calib = { t0: performance.now(), L:false, R:false, U:false, D:false, restSamples:[] };
+  obs = null; rest = null; running = false; rawRest = null;
+  calib = { t0: performance.now(), L:false, R:false, U:false, D:false, restSamples:[], phase:1 };
   for (const k of ['dL','dR','dU','dD','dC']) $(k).classList.remove('on');
   $('over').hidden = true; $('calib').hidden = false;
 }
+function finishCalibration(){
+  calib = null; $('calib').hidden = true;
+  if (!rest){ rest = {...target}; rawRest = {...rest}; }
+  // floor the range so a timid calibration still gives a playable space
+  const r0 = rest, F = CAL.floor;
+  if (!obs) { obs = null; observe(r0); }
+  obs.minX = Math.min(obs.minX, r0.x - F.x); obs.maxX = Math.max(obs.maxX, r0.x + F.x);
+  obs.minY = Math.min(obs.minY, r0.y - F.down); obs.maxY = Math.max(obs.maxY, r0.y + F.up);
+  startRun();
+}
 function stepCalibration(t){
   const c = calib, fresh = t - lastFace < 300;
-  if (!rest){
+  if (c.phase === 1){
     if (fresh) c.restSamples.push({...target});
-    $('cmsg').textContent = fresh ? '정면을 보고 잠시 멈춰 주세요…' : '얼굴을 카메라에 맞춰 주세요';
-    if (c.restSamples.length >= 20){
-      const s = c.restSamples.slice(-12);
+    const need = 15, left = Math.max(0, need - c.restSamples.length);
+    $('cmsg').textContent = fresh ? `정면을 보고 잠시 멈춰 주세요… ${Math.round(100*(need-left)/need)}%` : '얼굴을 카메라에 맞춰 주세요';
+    if (c.restSamples.length >= need || t - c.t0 > 4000){
+      const s = c.restSamples.length ? c.restSamples.slice(-10) : [{...target}];
       rest = { x: s.reduce((a,b)=>a+b.x,0)/s.length, y: s.reduce((a,b)=>a+b.y,0)/s.length, z: s.reduce((a,b)=>a+b.z,0)/s.length };
-      obs = null; observe(rest); c.t0 = t; $('dC').classList.add('on');
+      rawRest = {...rest};
+      obs = null; observe(rest); c.t0 = t; c.phase = 2; $('dC').classList.add('on');
     }
     return;
   }
@@ -276,28 +291,8 @@ function stepCalibration(t){
   $('dL').classList.toggle('on', c.L); $('dR').classList.toggle('on', c.R);
   $('dU').classList.toggle('on', c.U); $('dD').classList.toggle('on', c.D);
   const n = [c.L,c.R,c.U,c.D].filter(Boolean).length, left = Math.max(0, (CAL.timeout - (t - c.t0))/1000);
-  $('cmsg').textContent = `${n}/4 · 남은 시간 ${left.toFixed(0)}s · 범위 ${(obs.maxX-obs.minX).toFixed(0)}×${(obs.maxY-obs.minY).toFixed(0)}mm`;
-  if (n === 4 || t - c.t0 > CAL.timeout){ calib = null; $('calib').hidden = true; startRun(); }
-}
-
-// ---------- game ----------
-function startRun(){
-  score = 0; lives = LIVES; speed = 1; dist = 0; invulnUntil = performance.now() + 1500;
-  resetGates(); updateHud(); running = true;
-  toast('GO', '고개로 조종');
-}
-function updateHud(){
-  $('score').textContent = score;
-  $('lives').innerHTML = Array.from({length:LIVES}, (_,i) => `<i class="${i < lives ? '' : 'off'}"></i>`).join('');
-  $('spd').textContent = '×' + speed.toFixed(1);
-}
-function toast(big, small, ms=900){ $('toast').innerHTML = big + (small ? '<small>'+small+'</small>' : ''); toastUntil = performance.now() + ms; }
-function flash(){ const f = $('flash'); f.style.transition = 'none'; f.style.opacity = .55; requestAnimationFrame(()=>{ f.style.transition = 'opacity .45s'; f.style.opacity = 0; }); }
-function gameOver(){
-  running = false;
-  if (score > best){ best = score; try{ localStorage.setItem('headrush-best', best); }catch(e){} }
-  $('finalScore').textContent = score; $('best').textContent = 'BEST ' + best;
-  setTimeout(() => { $('over').hidden = false; }, 600);
+  $('cmsg').textContent = `${n}/4 · ${left.toFixed(0)}s · 범위 ${(obs.maxX-obs.minX).toFixed(0)}×${(obs.maxY-obs.minY).toFixed(0)}mm`;
+  if ((n === 4 && t - c.t0 > 1500) || t - c.t0 > CAL.timeout) finishCalibration();
 }
 
 // ---------- audio ----------
@@ -341,7 +336,7 @@ function track(t){
   const res = landmarker.detectForVideo(video, t);
   frames++; if (t - fpsT > 1000){ fps = frames; frames = 0; fpsT = t; }
   const lm = res.faceLandmarks && res.faceLandmarks[0];
-  if (lm){ const e = eyeFromLandmarks(lm, video.videoWidth, video.videoHeight, t); if (e){ target = e; lastFace = t; } }
+  if (lm){ const e = eyeFromLandmarks(lm, video.videoWidth, video.videoHeight, t); if (e){ target = amplify(e); lastFace = t; } }
 }
 
 // ---------- controls ----------
@@ -361,6 +356,8 @@ $('touch').onchange = e => { touchMode = e.target.checked;
 $('inv').onchange = e => { invertX = e.target.checked; if (landmarker && !touchMode) startCalibration(); };
 $('sw').oninput = e => { screenW = +e.target.value; $('swv').textContent = screenW; resize(); if (running) startRun(); };
 $('recal').onclick = () => { if (landmarker && !touchMode) startCalibration(); };
+$('skipCal').onclick = () => { if (calib) finishCalibration(); };
+$('gain').oninput = e => { gain = e.target.value/10; $('gainv').textContent = gain.toFixed(1); };
 $('again').onclick = () => { $('over').hidden = true; startRun(); };
 
 // ---------- loop ----------
@@ -384,15 +381,15 @@ function loop(t){
     if (reticle){ reticle.visible = !!ng && running; if (ng) reticle.position.set(ship.position.x, ship.position.y, ng.position.z + TW*0.04); } }
 
   if (running){
-    speed = Math.min(4, 1 + dist*0.01);
-    const v = 2.0 * speed * dt;            // tunnel scroll per frame (screen widths)
+    speed = Math.min(3.5, 1 + dist*0.006);
+    const v = 1.7 * speed * dt;            // tunnel scroll per frame (screen widths)
     dist += v;
     for (const r of rings){ r.position.z += v; if (r.position.z > 0) r.position.z -= LEN; }
     for (const g of gates){
       g.position.z += v;
       if (!g.userData.passed && g.position.z >= SHIP_Z){
         g.userData.passed = true;
-        const u = g.userData, inHole = Math.abs(ship.position.x - u.hx) < u.hw/2 - TW*0.02 && Math.abs(ship.position.y - u.hy) < u.hh/2 - TW*0.02;
+        const u = g.userData, inHole = Math.abs(ship.position.x - u.hx) < u.hw/2 + TW*0.01 && Math.abs(ship.position.y - u.hy) < u.hh/2 + TW*0.01;
         if (inHole){ score++; blip(700 + Math.min(score,20)*30, .1); if (score % 10 === 0) toast(score, '×' + speed.toFixed(1)); }
         else if (t > invulnUntil){ lives--; flash(); thud(); invulnUntil = t + 1200; if (lives <= 0){ updateHud(); gameOver(); return; } }
         updateHud();

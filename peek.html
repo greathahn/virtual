@@ -64,6 +64,7 @@
 <div class="ctl">
   <button class="sm" id="hintBtn">힌트</button>
   <button class="sm" id="recal">범위 다시 측정</button>
+  <label>감도 <input id="gain" type="range" min="10" max="30" value="18"><b id="gainv">1.8</b>×</label>
   <label>화면 폭 <input id="sw" type="range" min="50" max="400" value="68"><b id="swv">68</b>mm</label>
   <label><input id="inv" type="checkbox"> X 반전</label>
   <label><input id="touch" type="checkbox"> 터치 모드</label>
@@ -84,6 +85,7 @@
     <i id="dL">←</i><i class="c" id="dC">정면</i><i id="dR">→</i>
     <i></i><i id="dD">↓</i><i></i>
   </div>
+  <button class="sm" id="skipCal" style="display:inline-flex;margin-bottom:10px">건너뛰기</button>
   <div id="cmsg" class="sub" style="color:var(--dim);font:12px var(--mono)"></div>
 </div></div>
 
@@ -98,15 +100,15 @@
 // ---------- config ----------
 const IPD_MM = 63, CAM_ABOVE_MM = 8, FOCAL_FACTOR = 0.8;
 const DEFAULT_EYE = {x:0, y:0, z:380};
-const DWELL_MS = 600, RELOCATE_MS = 15000;
-const CAL = { x:55, up:45, down:35, timeout:8000 };   // mm of head movement that counts, and max wait
+const DWELL_MS = 400, RELOCATE_MS = 12000;
+const CAL = { x:25, up:20, down:20, timeout:6000, floor:{x:45, up:35, down:30} };
 
 // ---------- state ----------
 let screenW = 68, screenH = 68 * innerHeight / innerWidth;
 let eye = {...DEFAULT_EYE}, target = {...DEFAULT_EYE}, lastFace = 0;
 let invertX = false, touchMode = false, running = false;
 let level = 1, gems = [], occluders = [], foundCount = 0, levelStart = 0, hintUntil = 0;
-let obs = null, rest = null, calib = null;   // observed eye range, resting pose, calibration progress
+let obs = null, rest = null, calib = null, rawRest = null, gain = 1.8;   // observed eye range, resting pose, calibration progress
 
 const $ = id => document.getElementById(id);
 const canvas = $('c'), overlay = $('o'), octx = overlay.getContext('2d'), video = $('v'), st = $('st');
@@ -182,7 +184,7 @@ function reachableFrom(p, r, R){
   const seen = [];
   for (const z of R.zs) for (const y of R.ys) for (const x of R.xs)
     if (visibleFrom({x,y,z}, p, r)) seen.push({x,y,z});
-  if (seen.length < 3) return null;
+  if (seen.length < Math.max(4, R.xs.length*R.ys.length*R.zs.length*0.12)) return null;
   const d = a => (a.x-R.rest.x)**2 + (a.y-R.rest.y)**2 + (a.z-R.rest.z)**2;
   seen.sort((a,b) => d(a) - d(b));
   return seen[0];
@@ -213,7 +215,7 @@ function buildLevel(){
   const W = screenW, H = screenH, D = W * 2.5;
   const pm = new THREE.MeshStandardMaterial({color:0x1a2230, roughness:.85});
   const pm2 = new THREE.MeshStandardMaterial({color:0x242e3f, roughness:.8});
-  const nPillars = 3 + level, nGems = 2 + Math.min(level, 6);
+  const nPillars = 2 + level, nGems = 1 + Math.min(level, 6);
   const addBox = (w,h,d,x,y,z,mat) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), mat); m.position.set(x,y,z); props.add(m); occluders.push(m); return m; };
   for (let i=0;i<nPillars;i++){
     const w = W*rand(.08,.16), h = H*rand(.45,1.0);
@@ -225,7 +227,7 @@ function buildLevel(){
   }
   addBox(W*rand(.3,.6), H*.04, W*.25, rand(-W*.2,W*.2), rand(-H*.3,H*.3), -D*rand(.3,.7), pm2);
 
-  const r = W*0.045;
+  const r = W*0.055;
   for (let g=0; g<nGems; g++){
     const placed = placeGem(r, gems.map(o => o.mesh.position));
     if (!placed) continue;
@@ -289,6 +291,7 @@ function eyeFromLandmarks(lm, vw, vh, t){
   if (invertX) x = -x;
   return { x:fx.filter(x,t), y:fy.filter(y,t), z:fz.filter(z,t) };
 }
+function amplify(e){ if (!rawRest) return e; return { x: rawRest.x + (e.x-rawRest.x)*gain, y: rawRest.y + (e.y-rawRest.y)*gain, z: e.z }; }
 function observe(e){
   if (!obs){ obs = {minX:e.x, maxX:e.x, minY:e.y, maxY:e.y, minZ:e.z, maxZ:e.z}; return; }
   obs.minX = Math.min(obs.minX,e.x); obs.maxX = Math.max(obs.maxX,e.x);
@@ -298,20 +301,32 @@ function observe(e){
 
 // ---------- calibration ----------
 function startCalibration(){
-  obs = null; rest = null; running = false;
-  calib = { t0: performance.now(), L:false, R:false, U:false, D:false, restSamples:[] };
-  for (const k of ['dL','dR','dU','dD']) $(k).classList.remove('on');
+  obs = null; rest = null; running = false; rawRest = null;
+  calib = { t0: performance.now(), L:false, R:false, U:false, D:false, restSamples:[], phase:1 };
+  for (const k of ['dL','dR','dU','dD','dC']) $(k).classList.remove('on');
   $('clear').hidden = true; $('calib').hidden = false;
+}
+function finishCalibration(){
+  calib = null; $('calib').hidden = true;
+  if (!rest){ rest = {...target}; rawRest = {...rest}; }
+  // floor the range so a timid calibration still gives a playable space
+  const r0 = rest, F = CAL.floor;
+  if (!obs) { obs = null; observe(r0); }
+  obs.minX = Math.min(obs.minX, r0.x - F.x); obs.maxX = Math.max(obs.maxX, r0.x + F.x);
+  obs.minY = Math.min(obs.minY, r0.y - F.down); obs.maxY = Math.max(obs.maxY, r0.y + F.up);
+  buildLevel(); running = true;
 }
 function stepCalibration(t){
   const c = calib, fresh = t - lastFace < 300;
-  if (!rest){
+  if (c.phase === 1){
     if (fresh) c.restSamples.push({...target});
-    $('cmsg').textContent = fresh ? '정면을 보고 잠시 멈춰 주세요…' : '얼굴을 카메라에 맞춰 주세요';
-    if (c.restSamples.length >= 20){
-      const s = c.restSamples.slice(-12);
+    const need = 15, left = Math.max(0, need - c.restSamples.length);
+    $('cmsg').textContent = fresh ? `정면을 보고 잠시 멈춰 주세요… ${Math.round(100*(need-left)/need)}%` : '얼굴을 카메라에 맞춰 주세요';
+    if (c.restSamples.length >= need || t - c.t0 > 4000){
+      const s = c.restSamples.length ? c.restSamples.slice(-10) : [{...target}];
       rest = { x: s.reduce((a,b)=>a+b.x,0)/s.length, y: s.reduce((a,b)=>a+b.y,0)/s.length, z: s.reduce((a,b)=>a+b.z,0)/s.length };
-      obs = null; observe(rest); c.t0 = t; $('dC').classList.add('on');
+      rawRest = {...rest};
+      obs = null; observe(rest); c.t0 = t; c.phase = 2; $('dC').classList.add('on');
     }
     return;
   }
@@ -323,11 +338,8 @@ function stepCalibration(t){
   $('dL').classList.toggle('on', c.L); $('dR').classList.toggle('on', c.R);
   $('dU').classList.toggle('on', c.U); $('dD').classList.toggle('on', c.D);
   const n = [c.L,c.R,c.U,c.D].filter(Boolean).length, left = Math.max(0, (CAL.timeout - (t - c.t0))/1000);
-  $('cmsg').textContent = `${n}/4 · 남은 시간 ${left.toFixed(0)}s · 범위 ${(obs.maxX-obs.minX).toFixed(0)}×${(obs.maxY-obs.minY).toFixed(0)}mm`;
-  if (n === 4 || t - c.t0 > CAL.timeout){
-    calib = null; $('calib').hidden = true;
-    buildLevel(); running = true;
-  }
+  $('cmsg').textContent = `${n}/4 · ${left.toFixed(0)}s · 범위 ${(obs.maxX-obs.minX).toFixed(0)}×${(obs.maxY-obs.minY).toFixed(0)}mm`;
+  if ((n === 4 && t - c.t0 > 1500) || t - c.t0 > CAL.timeout) finishCalibration();
 }
 
 // ---------- audio ----------
@@ -370,7 +382,7 @@ function track(t){
   const res = landmarker.detectForVideo(video, t);
   frames++; if (t - fpsT > 1000){ fps = frames; frames = 0; fpsT = t; }
   const lm = res.faceLandmarks && res.faceLandmarks[0];
-  if (lm){ const e = eyeFromLandmarks(lm, video.videoWidth, video.videoHeight, t); if (e){ target = e; lastFace = t; if (running) observe(e); } }
+  if (lm){ const e = eyeFromLandmarks(lm, video.videoWidth, video.videoHeight, t); if (e){ target = amplify(e); lastFace = t; if (running) observe(target); } }
 }
 
 // ---------- controls ----------
@@ -390,6 +402,8 @@ $('touch').onchange = e => { touchMode = e.target.checked;
 $('inv').onchange = e => { invertX = e.target.checked; if (landmarker && !touchMode) startCalibration(); };
 $('sw').oninput = e => { const w = +e.target.value, f = w/screenW; screenW = w; $('swv').textContent = w; rescaleLevel(f); resize(false); };
 $('recal').onclick = () => { if (landmarker && !touchMode) startCalibration(); };
+$('skipCal').onclick = () => { if (calib) finishCalibration(); };
+$('gain').oninput = e => { gain = e.target.value/10; $('gainv').textContent = gain.toFixed(1); };
 $('next').onclick = () => { level++; $('clear').hidden = true; buildLevel(); running = true; };
 $('hintBtn').onclick = () => {
   const g = gems.find(x => !x.found); if (!g) return;
@@ -416,7 +430,7 @@ function loop(t){
   if (running){
     for (const g of gems){
       g.mesh.rotation.y += 0.02; g.mesh.rotation.x += 0.011;
-      if (g.found){ g.scale = Math.max(0, g.scale - dt/350); g.mesh.scale.setScalar(g.scale * g.r/(screenW*0.045)); if (g.scale===0) g.mesh.visible=false; continue; }
+      if (g.found){ g.scale = Math.max(0, g.scale - dt/350); g.mesh.scale.setScalar(g.scale * g.r/(screenW*0.055)); if (g.scale===0) g.mesh.visible=false; continue; }
       const vis = visibleFrom(eye, g.mesh.position, g.r);
       if (vis){ g.dwell += dt; g.lastSeen = t; g.everSeen = true; g.mesh.material.emissiveIntensity = .9; }
       else { if (t - g.lastSeen > 150) g.dwell = Math.max(0, g.dwell - dt*2); g.mesh.material.emissiveIntensity = .35;
