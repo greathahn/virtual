@@ -54,6 +54,7 @@
   <label>화면 폭 <input id="sw" type="range" min="50" max="400" value="68"><b id="swv">68</b>mm</label>
   <label style="cursor:pointer">📷 다른 사진 <input id="file" type="file" accept="image/*"></label>
   <button class="sm" id="gen3d" style="background:var(--panel)">🧊 3D 모델 만들기</button>
+  <button class="sm" id="back2photo" style="background:var(--panel);display:none">📷 사진으로</button>
 </div>
 
 <div class="ov" id="genov" hidden><div style="max-width:340px">
@@ -64,8 +65,8 @@
       <input id="hftok" type="password" placeholder="hf_..." style="font:13px var(--mono);padding:9px;border-radius:8px;border:1px solid #2a3140;background:#111;color:var(--fg)"></label>
     <label style="display:grid;gap:4px;font-size:12px;color:var(--dim)">모델
       <select id="hfmodel" style="font:13px system-ui;padding:9px;border-radius:8px;border:1px solid #2a3140;background:#111;color:var(--fg)">
-        <option value="tencent/Hunyuan3D-2">tencent/Hunyuan3D-2 (형상만, ~1분)</option>
-        <option value="tencent/Hunyuan3D-2|tex">tencent/Hunyuan3D-2 (형상+텍스처, ~2분)</option>
+        <option value="tencent/Hunyuan3D-2|tex">tencent/Hunyuan3D-2 (형상+텍스처, 2~3분)</option>
+        <option value="tencent/Hunyuan3D-2">tencent/Hunyuan3D-2 (형상만, 흰색, ~1분)</option>
         <option value="tencent/Hunyuan3D-2mini-Turbo">tencent/Hunyuan3D-2mini-Turbo (빠름)</option>
         <option value="stabilityai/TripoSR">stabilityai/TripoSR (현재 Runtime error)</option>
         <option value="custom">직접 입력…</option>
@@ -260,7 +261,7 @@ addEventListener('pointermove', ev => {
 });
 
 // ---------- 3D model via Hugging Face Space (plain HTTP, no client library) ----------
-let model3d = null, lastImageEl = null;
+let model3d = null, lastImageEl = null, spin = 0;
 const log = t => { const el = $('genlog'); el.textContent += t + '\n'; el.scrollTop = el.scrollHeight; st.textContent = t; };
 async function imageBlob(img){ const c = fitImage(img, 1024); return await new Promise(r => c.toBlob(r, 'image/png')); }
 async function space(id, tok){
@@ -369,10 +370,10 @@ async function showModel(url){
     const tex = o.material && o.material.map;
     o.material = new THREE.MeshStandardMaterial({ map: tex || null, color: tex ? 0xffffff : 0xd9d3c7, roughness:.7, metalness:.02, side: THREE.DoubleSide });
     if (tex) tex.encoding = THREE.sRGBEncoding; });
-  const holder = new THREE.Group(); holder.add(model3d); holder.position.z = -W * 0.55; model3d = holder;
-  scene.add(model3d);
+  const holder = new THREE.Group(); holder.add(model3d); holder.position.z = -W * 0.7; model3d = holder;
+  scene.add(model3d); $('back2photo').style.display = '';
   if (!scene.getObjectByName('mlight')){ const l = new THREE.DirectionalLight(0xffffff, 1.2); l.name = 'mlight'; l.position.set(1, 2, 3); scene.add(l); const l2 = new THREE.DirectionalLight(0x8899ff, .5); l2.position.set(-2, -1, 1); scene.add(l2); scene.add(new THREE.AmbientLight(0xffffff, .6)); }
-  if (photo){ photo.position.z = -W * 1.3; }
+  if (photo) photo.visible = false;
 }
 async function showApi(){
   const tok = $('hftok').value.trim(); $('genlog').textContent = '';
@@ -382,6 +383,7 @@ async function showApi(){
 }
 $('gen3d').onclick = () => { $('genov').hidden = false; try { $('hftok').value = localStorage.getItem('hf_token') || ''; } catch(e){} };
 $('hfmodel').onchange = e => { $('customwrap').style.display = e.target.value === 'custom' ? 'grid' : 'none'; };
+$('back2photo').onclick = () => { if (model3d){ scene.remove(model3d); model3d = null; } if (photo) photo.visible = true; $('back2photo').style.display = 'none'; };
 $('genrun').onclick = generate3D; $('genapi').onclick = showApi; $('gencancel').onclick = () => { $('genov').hidden = true; };
 
 // ---------- UI ----------
@@ -420,7 +422,8 @@ function loop(t){
   track(t);
   if (mode !== 'touch' && t - lastFace > 700) target = {...DEFAULT_EYE};
   const k = .3; eye.x += (target.x-eye.x)*k; eye.y += (target.y-eye.y)*k; eye.z += (target.z-eye.z)*k;
-  if (model3d) model3d.rotation.y += 0.004;
+  if (model3d){ spin += 0.0025; const yaw = -(eye.x - DEFAULT_EYE.x) * 0.014, pitch = Math.max(-.6, Math.min(.6, (eye.y - DEFAULT_EYE.y) * 0.008));
+    model3d.rotation.y += ((spin + yaw) - model3d.rotation.y) * .15; model3d.rotation.x += (pitch - model3d.rotation.x) * .15; }
   applyEye(eye); renderer.render(scene, camera);
   $('pos').textContent = `${mode}${mode==='face'?' '+fps+'fps':''} · ${eye.x.toFixed(0)},${eye.y.toFixed(0)},${eye.z.toFixed(0)}`;
 }
