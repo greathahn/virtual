@@ -54,6 +54,7 @@
   <label>화면 폭 <input id="sw" type="range" min="50" max="400" value="68"><b id="swv">68</b>mm</label>
   <label style="cursor:pointer">📷 다른 사진 <input id="file" type="file" accept="image/*"></label>
   <button class="sm" id="gen3d" style="background:var(--panel)">🧊 3D 모델 만들기</button>
+  <div class="row" id="projrow" style="display:none"><span style="font-size:11px;color:var(--dim);padding:0 4px">투영</span><button class="sm" id="flipx">↔</button><button class="sm" id="flipy">↕</button></div>
   <button class="sm" id="back2photo" style="background:var(--panel);display:none">📷 사진으로</button>
 </div>
 
@@ -355,23 +356,30 @@ async function generate3D(){
   }catch(e){ log('오류: ' + (e && e.message ? e.message : JSON.stringify(e))); }
   $('genrun').disabled = false;
 }
-let segmenter = null;
+let segmenter = null, proj = null;   // proj = {root, box, bb, fx, fy}
 async function subjectBox(img){
   // normalised [x0,y0,x1,y1] of the foreground subject in the photo (top-left origin)
   try{
     const { mp, vision } = await loadMp();
     segmenter = segmenter || await mp.ImageSegmenter.createFromOptions(vision, { baseOptions:{ modelAssetPath:'https://storage.googleapis.com/mediapipe-models/image_segmenter/deeplab_v3/float32/1/deeplab_v3.tflite' }, runningMode:'IMAGE', outputCategoryMask:true, outputConfidenceMasks:false });
     const c = fitImage(img, 512), res = segmenter.segment(c), m = res.categoryMask, d = m.getAsUint8Array(), w = m.width, h = m.height;
-    let x0 = w, y0 = h, x1 = -1, y1 = -1, n = 0;
-    for (let y=0;y<h;y++) for (let x=0;x<w;x++){ if (d[y*w+x] !== 0){ n++; if (x<x0) x0=x; if (x>x1) x1=x; if (y<y0) y0=y; if (y>y1) y1=y; } }
+    const area = new Uint32Array(256); for (let i=0;i<w*h;i++) area[d[i]]++;
+    let cls = 15;                                   // PASCAL "person" first
+    if (area[15] < w*h*0.02){ cls = 0; for (let k=1;k<256;k++) if (area[k] > area[cls] || cls === 0) cls = k; }
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (let y=0;y<h;y++) for (let x=0;x<w;x++){ if (d[y*w+x] === cls){ if (x<x0) x0=x; if (x>x1) x1=x; if (y<y0) y0=y; if (y>y1) y1=y; } }
     res.close();
-    if (n < w*h*0.01) return null;
-    return [x0/w, y0/h, (x1+1)/w, (y1+1)/h];
+    if (!cls || area[cls] < w*h*0.01) return null;
+    const bb = [x0/w, y0/h, (x1+1)/w, (y1+1)/h];
+    log(`피사체 class ${cls} box ${bb.map(v => v.toFixed(2)).join(',')}`);
+    return bb;
   }catch(e){ log('분할 실패: ' + (e.message||e)); return null; }
 }
-function projectPhoto(root, box, bb){
+function projectPhoto(root, box, bb, fx=false, fy=false){
   // planar projection from the front: mesh bbox (x,y) → subject box in the photo
-  const [bx0, by0, bx1, by1] = bb, sz = box.getSize(new THREE.Vector3());
+  proj = {root, box, bb, fx, fy};
+  let [bx0, by0, bx1, by1] = bb; if (fx) [bx0, bx1] = [bx1, bx0]; if (fy) [by0, by1] = [by1, by0];
+  const sz = box.getSize(new THREE.Vector3());
   const v = new THREE.Vector3();
   root.updateMatrixWorld(true);
   root.traverse(o => {
@@ -409,7 +417,7 @@ async function showModel(url){
   let untextured = true; model3d.traverse(o => { if (o.isMesh && o.material.map) untextured = false; });
   if (untextured && photoTex && lastImageEl){ log('피사체 분할 + 사진 투영…'); const bb = (await subjectBox(lastImageEl)) || [0,0,1,1]; model3d.position.set(0,0,0); model3d.scale.setScalar(1); projectPhoto(model3d, box, bb); model3d.position.sub(ctr).multiplyScalar(sc); model3d.scale.setScalar(sc); }
   const holder = new THREE.Group(); holder.add(model3d); holder.position.z = -W * 0.7; model3d = holder;
-  scene.add(model3d); $('back2photo').style.display = '';
+  scene.add(model3d); $('back2photo').style.display = ''; $('projrow').style.display = untextured ? '' : 'none';
   if (!scene.getObjectByName('mlight')){ const l = new THREE.DirectionalLight(0xffffff, 1.2); l.name = 'mlight'; l.position.set(1, 2, 3); scene.add(l); const l2 = new THREE.DirectionalLight(0x8899ff, .5); l2.position.set(-2, -1, 1); scene.add(l2); scene.add(new THREE.AmbientLight(0xffffff, .6)); }
   if (photo) photo.visible = false;
 }
@@ -421,7 +429,9 @@ async function showApi(){
 }
 $('gen3d').onclick = () => { $('genov').hidden = false; try { $('hftok').value = localStorage.getItem('hf_token') || ''; } catch(e){} };
 $('hfmodel').onchange = e => { $('customwrap').style.display = e.target.value === 'custom' ? 'grid' : 'none'; };
-$('back2photo').onclick = () => { if (model3d){ scene.remove(model3d); model3d = null; } if (photo) photo.visible = true; $('back2photo').style.display = 'none'; };
+function reproject(fx, fy){ if (!proj) return; const r = proj.root, p = r.position.clone(), sc = r.scale.x; r.position.set(0,0,0); r.scale.setScalar(1); projectPhoto(r, proj.box, proj.bb, fx, fy); r.position.copy(p); r.scale.setScalar(sc); }
+$('flipx').onclick = () => reproject(!proj.fx, proj.fy); $('flipy').onclick = () => reproject(proj.fx, !proj.fy);
+$('back2photo').onclick = () => { if (model3d){ scene.remove(model3d); model3d = null; } if (photo) photo.visible = true; $('back2photo').style.display = 'none'; $('projrow').style.display = 'none'; };
 $('genrun').onclick = generate3D; $('genapi').onclick = showApi; $('gencancel').onclick = () => { $('genov').hidden = true; };
 
 // ---------- UI ----------
