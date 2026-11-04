@@ -295,6 +295,26 @@ function stepCalibration(t){
   if ((n === 4 && t - c.t0 > 1500) || t - c.t0 > CAL.timeout) finishCalibration();
 }
 
+// ---------- game ----------
+function startRun(){
+  score = 0; lives = LIVES; speed = 1; dist = 0; invulnUntil = performance.now() + 1500;
+  resetGates(); updateHud(); running = true;
+  toast('GO', '고개로 조종');
+}
+function updateHud(){
+  $('score').textContent = score;
+  $('lives').innerHTML = Array.from({length:LIVES}, (_,i) => `<i class="${i < lives ? '' : 'off'}"></i>`).join('');
+  $('spd').textContent = '×' + speed.toFixed(1);
+}
+function toast(big, small, ms=900){ $('toast').innerHTML = big + (small ? '<small>'+small+'</small>' : ''); toastUntil = performance.now() + ms; }
+function flash(){ const f = $('flash'); f.style.transition = 'none'; f.style.opacity = .55; requestAnimationFrame(()=>{ f.style.transition = 'opacity .45s'; f.style.opacity = 0; }); }
+function gameOver(){
+  running = false;
+  if (score > best){ best = score; try{ localStorage.setItem('headrush-best', best); }catch(e){} }
+  $('finalScore').textContent = score; $('best').textContent = 'BEST ' + best;
+  setTimeout(() => { $('over').hidden = false; }, 600);
+}
+
 // ---------- audio ----------
 let ac = null;
 function blip(freq=880, dur=.12, type='triangle', gain=.16){
