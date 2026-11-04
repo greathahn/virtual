@@ -53,7 +53,24 @@
   <label><input id="cut" type="checkbox"> 경계 끊기</label>
   <label>화면 폭 <input id="sw" type="range" min="50" max="400" value="68"><b id="swv">68</b>mm</label>
   <label style="cursor:pointer">📷 다른 사진 <input id="file" type="file" accept="image/*"></label>
+  <button class="sm" id="gen3d" style="background:var(--panel)">🧊 3D 모델 만들기</button>
 </div>
+
+<div class="ov" id="genov" hidden><div style="max-width:340px">
+  <h1 style="font-size:20px">3D 모델 만들기</h1>
+  <p>Hugging Face Space(무료 GPU)로 사진 속 피사체를 메시로 만듭니다. 30초~2분.</p>
+  <div style="display:grid;gap:8px;text-align:left">
+    <label style="display:grid;gap:4px;font-size:12px;color:var(--dim)">HF 토큰 (브라우저에만 저장)
+      <input id="hftok" type="password" placeholder="hf_..." style="font:13px var(--mono);padding:9px;border-radius:8px;border:1px solid #2a3140;background:#111;color:var(--fg)"></label>
+    <label style="display:grid;gap:4px;font-size:12px;color:var(--dim)">모델
+      <select id="hfmodel" style="font:13px system-ui;padding:9px;border-radius:8px;border:1px solid #2a3140;background:#111;color:var(--fg)">
+        <option value="triposr">TripoSR (빠름, 10~30초)</option>
+        <option value="hunyuan">Hunyuan3D-2 (느림, 품질↑)</option>
+      </select></label>
+  </div>
+  <div class="btns" style="margin-top:14px"><button id="genrun">생성</button><button class="alt" id="genapi">API 보기</button><button class="alt" id="gencancel">닫기</button></div>
+  <div id="genlog" style="font:11px var(--mono);color:var(--dim);margin-top:12px;text-align:left;max-height:30vh;overflow:auto;white-space:pre-wrap"></div>
+</div></div>
 
 <div class="ov" id="start"><div>
   <h1>PHOTO WINDOW</h1>
@@ -64,6 +81,7 @@
 </div></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 <script type="module">
 const $ = id => document.getElementById(id);
 const canvas = $('c'), video = $('v'), st = $('st');
@@ -170,7 +188,8 @@ async function estimate(img, say, progress){
   return b;
 }
 async function usePhoto(img, say, progress){
-  photoAspect = img.width/img.height;
+  lastImageEl = img; photoAspect = img.width/img.height;
+  if (model3d){ scene.remove(model3d); model3d = null; }
   photoTex = new THREE.Texture(fitImage(img, 1600)); photoTex.encoding = THREE.sRGBEncoding; photoTex.needsUpdate = true;
   // flat first, so there's something on screen while the model runs
   const flat = document.createElement('canvas'); flat.width = flat.height = 4; const fc = flat.getContext('2d'); fc.fillStyle = '#808080'; fc.fillRect(0,0,4,4);
@@ -235,6 +254,71 @@ addEventListener('pointermove', ev => {
   target = { x:(ev.clientX/innerWidth-.5)*screenW*4, y:-(ev.clientY/innerHeight-.5)*screenH*4, z:340 }; lastFace = performance.now();
 });
 
+// ---------- 3D model via Hugging Face Space ----------
+let model3d = null, lastImageBlob = null, lastImageEl = null;
+const log = t => { const el = $('genlog'); el.textContent += t + '\n'; el.scrollTop = el.scrollHeight; st.textContent = t; };
+async function imageBlob(img){ const c = fitImage(img, 1024); return await new Promise(r => c.toBlob(r, 'image/png')); }
+async function gradio(){ const m = await import('https://cdn.jsdelivr.net/npm/@gradio/client@1.10.0/+esm'); return m; }
+function fileUrl(d){ return d && (d.url || null); }
+async function generate3D(){
+  const tok = $('hftok').value.trim(); try { localStorage.setItem('hf_token', tok); } catch(e){}
+  if (!lastImageEl){ log('사진이 없습니다'); return; }
+  $('genrun').disabled = true; $('genlog').textContent = '';
+  try{
+    const { Client, handle_file } = await gradio();
+    const blob = await imageBlob(lastImageEl);
+    const which = $('hfmodel').value;
+    let glbUrl = null;
+    if (which === 'triposr'){
+      log('연결: stabilityai/TripoSR'); const c = await Client.connect('stabilityai/TripoSR', tok ? {hf_token: tok} : {});
+      log('배경 제거…'); const pre = await c.predict('/preprocess', { input_image: blob, do_remove_background: true, foreground_ratio: 0.85 });
+      const preUrl = fileUrl(pre.data[0]); log('메시 생성…');
+      const gen = await c.predict('/generate', { image: handle_file(preUrl), mc_resolution: 256 });
+      const files = gen.data.flat ? gen.data.flat() : gen.data;
+      const glb = files.find(d => d && /\.glb$/i.test(d.path || d.url || d.orig_name || ''));
+      glbUrl = fileUrl(glb || files[files.length-1]);
+    } else {
+      log('연결: tencent/Hunyuan3D-2'); const c = await Client.connect('tencent/Hunyuan3D-2', tok ? {hf_token: tok} : {});
+      log('형상+텍스처 생성… (1~2분)');
+      const gen = await c.predict('/generation_all', { caption: '', image: blob, mv_image_front: null, mv_image_back: null, mv_image_left: null, mv_image_right: null,
+        steps: 30, guidance_scale: 5.5, seed: 1234, octree_resolution: 256, check_box_rembg: true, num_chunks: 8000, randomize_seed: false });
+      const files = gen.data.flat ? gen.data.flat() : gen.data;
+      const glb = files.filter(d => d && /\.glb$/i.test(d.path || d.url || d.orig_name || '')).pop();
+      glbUrl = fileUrl(glb);
+    }
+    if (!glbUrl) throw new Error('glb를 찾지 못함: ' + JSON.stringify(files).slice(0, 400));
+    log('다운로드: ' + glbUrl.slice(0, 80) + '…');
+    await showModel(glbUrl);
+    log('완료'); $('genov').hidden = true;
+  }catch(e){ log('오류: ' + (e && e.message ? e.message : JSON.stringify(e))); }
+  $('genrun').disabled = false;
+}
+function showModel(url){
+  return new Promise((res, rej) => {
+    new THREE.GLTFLoader().load(url, g => {
+      if (model3d) scene.remove(model3d);
+      model3d = g.scene;
+      const box = new THREE.Box3().setFromObject(model3d), size = box.getSize(new THREE.Vector3()), ctr = box.getCenter(new THREE.Vector3());
+      const W = screenW, H = screenH, s = Math.min(W, H) * 0.75 / Math.max(size.x, size.y, size.z);
+      model3d.position.sub(ctr).multiplyScalar(s); model3d.scale.setScalar(s);
+      const holder = new THREE.Group(); holder.add(model3d); holder.position.z = -W * 0.55; model3d = holder;
+      scene.add(model3d);
+      if (!scene.getObjectByName('mlight')){ const l = new THREE.DirectionalLight(0xffffff, 1.2); l.name = 'mlight'; l.position.set(1, 2, 3); scene.add(l); scene.add(new THREE.AmbientLight(0xffffff, .7)); }
+      if (photo){ photo.position.z = -W * 1.3; }   // photo becomes a backdrop behind the model
+      res();
+    }, undefined, rej);
+  });
+}
+async function showApi(){
+  const tok = $('hftok').value.trim(); $('genlog').textContent = '';
+  try{ const { Client } = await gradio(); const id = $('hfmodel').value === 'triposr' ? 'stabilityai/TripoSR' : 'tencent/Hunyuan3D-2';
+    const c = await Client.connect(id, tok ? {hf_token: tok} : {}); const api = await c.view_api();
+    for (const [k, v] of Object.entries(api.named_endpoints || {})) log(k + ' ← ' + (v.parameters || []).map(p => p.parameter_name || p.label).join(', '));
+  }catch(e){ log('오류: ' + (e && e.message ? e.message : e)); }
+}
+$('gen3d').onclick = () => { $('genov').hidden = false; try { $('hftok').value = localStorage.getItem('hf_token') || ''; } catch(e){} };
+$('genrun').onclick = generate3D; $('genapi').onclick = showApi; $('gencancel').onclick = () => { $('genov').hidden = true; };
+
 // ---------- UI ----------
 const say = t => { $('msg').textContent = t; st.textContent = t; };
 const progress = p => { $('bar').firstElementChild.style.width = (p*100).toFixed(0)+'%'; };
@@ -271,6 +355,7 @@ function loop(t){
   track(t);
   if (mode !== 'touch' && t - lastFace > 700) target = {...DEFAULT_EYE};
   const k = .3; eye.x += (target.x-eye.x)*k; eye.y += (target.y-eye.y)*k; eye.z += (target.z-eye.z)*k;
+  if (model3d) model3d.rotation.y += 0.004;
   applyEye(eye); renderer.render(scene, camera);
   $('pos').textContent = `${mode}${mode==='face'?' '+fps+'fps':''} · ${eye.x.toFixed(0)},${eye.y.toFixed(0)},${eye.z.toFixed(0)}`;
 }
