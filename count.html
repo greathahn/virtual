@@ -52,8 +52,8 @@
 <div id="q">블록이 몇 개?</div>
 <div id="toast"></div>
 <div class="ctl">
-  <label>감도 <input id="gain" type="range" min="10" max="30" value="18"><b id="gainv">1.8</b></label>
-  <label>폭 <input id="sw" type="range" min="50" max="400" value="68"><b id="swv">68</b></label>
+  <label>감도 <input id="gain" type="range" min="10" max="40" value="20"><b id="gainv">2.0</b></label>
+  <label>폭 <input id="sw" type="range" min="50" max="400" value="200"><b id="swv">200</b></label>
   <label><input id="inv" type="checkbox"> X반전</label>
   <label><input id="touch" type="checkbox"> 터치</label>
 </div>
@@ -77,8 +77,8 @@
 const $ = id => document.getElementById(id);
 const canvas = $('c'), video = $('v'), st = $('st');
 const IPD_MM = 63, CAM_ABOVE_MM = 8, FOCAL_FACTOR = 0.8, DEFAULT_EYE = {x:0, y:0, z:380};
-let screenW = 68, screenH = 68 * innerHeight / innerWidth;
-let eye = {...DEFAULT_EYE}, target = {...DEFAULT_EYE}, lastFace = 0, rawRest = null, gain = 1.8, invertX = false, touchMode = false;
+let screenW = 200, screenH = 200 * innerHeight / innerWidth;
+let eye = {...DEFAULT_EYE}, target = {...DEFAULT_EYE}, lastFace = 0, rawRest = null, gain = 2.0, invertX = false, touchMode = false;
 let level = 1, score = 0, running = false, levelStart = 0, answer = 0, toastUntil = 0, correct = 0, totalTime = 0;
 const ROUND = 10;
 const PALETTE = [ {name:'노란', hex:0xffa000}, {name:'파란', hex:0x1e6fe8}, {name:'빨간', hex:0xe8283c}, {name:'초록', hex:0x1fb84d} ];
